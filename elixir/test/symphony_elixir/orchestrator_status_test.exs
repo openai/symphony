@@ -453,6 +453,49 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{polling: %{checking?: true, next_poll_in_ms: nil}} = snapshot
   end
 
+  test "orchestrator triggers an immediate poll cycle shortly after startup" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 5_000)
+
+    orchestrator_name = Module.concat(__MODULE__, :ImmediateStartupOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    assert %{polling: %{checking?: true}} =
+             wait_for_snapshot(
+               pid,
+               fn
+                 %{polling: %{checking?: true}} ->
+                   true
+
+                 _ ->
+                   false
+               end,
+               500
+             )
+
+    assert %{polling: %{checking?: false, next_poll_in_ms: next_poll_in_ms, poll_interval_ms: 5_000}} =
+             wait_for_snapshot(
+               pid,
+               fn
+                 %{polling: %{checking?: false, next_poll_in_ms: due_in_ms}}
+                 when is_integer(due_in_ms) and due_in_ms <= 5_000 ->
+                   true
+
+                 _ ->
+                   false
+               end,
+               500
+             )
+
+    assert is_integer(next_poll_in_ms)
+    assert next_poll_in_ms >= 0
+  end
+
   test "orchestrator poll cycle resets next refresh countdown after a check" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
 
