@@ -519,18 +519,18 @@ defmodule SymphonyElixir.Config do
   defp resolve_env_value(value, fallback) when is_binary(value) do
     trimmed = String.trim(value)
 
-    if String.starts_with?(trimmed, "env:") do
-      trimmed
-      |> String.trim_leading("env:")
-      |> String.trim()
-      |> System.get_env()
-      |> then(fn
-        nil -> fallback
-        "" -> nil
-        env_value -> env_value
-      end)
-    else
-      trimmed
+    case env_reference_name(trimmed) do
+      {:ok, env_name} ->
+        env_name
+        |> System.get_env()
+        |> then(fn
+          nil -> fallback
+          "" -> nil
+          env_value -> env_value
+        end)
+
+      :error ->
+        trimmed
     end
   end
 
@@ -539,15 +539,21 @@ defmodule SymphonyElixir.Config do
   defp normalize_path_token(value) when is_binary(value) do
     trimmed = String.trim(value)
 
-    if String.starts_with?(trimmed, "env:") do
-      trimmed
-      |> String.trim_leading("env:")
-      |> String.trim()
-      |> resolve_env_token()
-    else
-      trimmed
+    case env_reference_name(trimmed) do
+      {:ok, env_name} -> resolve_env_token(env_name)
+      :error -> trimmed
     end
   end
+
+  defp env_reference_name("$" <> env_name) do
+    if String.match?(env_name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/) do
+      {:ok, env_name}
+    else
+      :error
+    end
+  end
+
+  defp env_reference_name(_value), do: :error
 
   defp resolve_env_token(value) do
     case System.get_env(value) do

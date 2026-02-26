@@ -342,9 +342,9 @@ Fields:
 - `endpoint` (string)
   - Default for `tracker.kind == "linear"`: `https://api.linear.app/graphql`
 - `api_key` (string)
-  - May be a literal token or `env:VAR_NAME`.
+  - May be a literal token or `$VAR_NAME`.
   - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
-  - If `env:VAR_NAME` resolves to an empty string, treat the key as missing.
+  - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
   - Required for dispatch when `tracker.kind == "linear"`.
 - `active_states` (list of strings or comma-separated string)
@@ -364,7 +364,7 @@ Fields:
 
 Fields:
 
-- `root` (path string or `env:VAR`)
+- `root` (path string or `$VAR`)
   - Default: `<system-temp>/symphony_workspaces`
   - `~` and strings containing path separators are expanded.
   - Bare strings without path separators are preserved as-is (relative roots are allowed but
@@ -473,14 +473,14 @@ Configuration precedence:
 
 1. Workflow file path selection (runtime setting -> cwd default).
 2. YAML front matter values.
-3. Environment indirection via `env:VAR_NAME` inside selected YAML values.
+3. Environment indirection via `$VAR_NAME` inside selected YAML values.
 4. Built-in defaults.
 
 Value coercion semantics:
 
 - Path/command fields support:
   - `~` home expansion
-  - `env:VAR` expansion
+  - `$VAR` expansion for env-backed path values
   - Apply expansion only to values intended to be local filesystem paths; do not rewrite URIs or
     arbitrary shell command strings.
 
@@ -525,7 +525,7 @@ Validation checks:
 
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
-- `tracker.api_key` is present after `env:` resolution.
+- `tracker.api_key` is present after `$` resolution.
 - `tracker.project_slug` is present when required by the selected tracker kind.
 - `codex.command` is present and non-empty.
 
@@ -535,7 +535,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 
 - `tracker.kind`: string, required, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `env:VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
+- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
 - `tracker.project_slug`: string, required when `tracker.kind=linear`
 - `tracker.active_states`: list/string, default `Todo, In Progress`
 - `tracker.terminal_states`: list/string, default `Closed, Cancelled, Canceled, Duplicate, Done`
@@ -1568,7 +1568,7 @@ Recommended additional hardening for ports:
 
 ### 15.3 Secret Handling
 
-- Support `env:VAR` indirection in workflow config.
+- Support `$VAR` indirection in workflow config.
 - Do not log API tokens or secret env values.
 - Validate presence of secrets without printing them.
 
@@ -1818,8 +1818,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Front matter non-map returns typed error
 - Config defaults apply when optional values are missing
 - `tracker.kind` validation enforces currently supported kind (`linear`)
-- `tracker.api_key` works (including `env:VAR` indirection)
-- `env:VAR` resolution works for tracker API key and path values
+- `tracker.api_key` works (including `$VAR` indirection)
+- `$VAR` resolution works for tracker API key and path values
 - `~` path expansion works
 - `codex.command` is preserved as a shell command string
 - Per-state concurrency override map normalizes state names and ignores invalid values
@@ -1946,7 +1946,7 @@ Use the same validation profiles as Section 17:
 
 - Workflow path selection supports explicit runtime path and cwd default
 - `WORKFLOW.md` loader with YAML front matter + prompt body split
-- Typed config layer with defaults and `env:` resolution
+- Typed config layer with defaults and `$` resolution
 - Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt
 - Polling orchestrator with single-authority mutable state
 - Issue tracker client with candidate fetch + state refresh + terminal fetch
