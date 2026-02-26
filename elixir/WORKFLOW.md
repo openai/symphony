@@ -22,28 +22,11 @@ workspace:
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .
+    if command -v mise >/dev/null 2>&1; then
+      cd elixir && mise trust && mise exec -- mix deps.get
+    fi
   before_remove: |
-    branch="$(git branch --show-current 2>/dev/null || true)"
-    if [ -z "$branch" ]; then
-      exit 0
-    fi
-    if ! command -v gh >/dev/null 2>&1; then
-      exit 0
-    fi
-    if ! gh auth status >/dev/null 2>&1; then
-      exit 0
-    fi
-    gh pr list \
-      --repo openai/symphony \
-      --head "$branch" \
-      --state open \
-      --json number \
-      --jq '.[].number' | while read -r pr_number; do
-      [ -n "$pr_number" ] || continue
-      gh pr close "$pr_number" \
-        --repo openai/symphony \
-        --comment "Closing because the Linear issue for branch $branch entered a terminal state without merge." || true
-    done
+    cd elixir && mise exec -- mix workspace.before_remove
 agent:
   max_concurrent_agents: 10
 codex:

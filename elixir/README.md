@@ -66,6 +66,9 @@ workspace:
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
+    if command -v mise >/dev/null 2>&1; then
+      cd elixir && mise trust && mise exec -- mix deps.get
+    fi
 agent:
   max_concurrent_agents: 10
 codex:
@@ -84,6 +87,8 @@ Notes:
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
+  the project deps in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `env:LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory and values prefixed with `env:VAR` are
   replaced by `$VAR` before use. Example:
@@ -94,6 +99,9 @@ Notes:
   hooks:
     after_create: |
       git clone --depth 1 "$SOURCE_REPO_URL" .
+      if command -v mise >/dev/null 2>&1; then
+        cd elixir && mise trust && mise exec -- mix deps.get
+      fi
   tracker:
     api_key: "env:LINEAR_API_KEY"
   codex:
@@ -125,9 +133,11 @@ mise exec -- elixir --version
 ```bash
 git clone https://github.com/openai/symphony
 cd symphony/elixir
-mix setup
-mix build
-./bin/symphony ./WORKFLOW.md
+mise trust
+mise install
+mise exec -- mix setup
+mise exec -- mix build
+mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
 ## Testing
