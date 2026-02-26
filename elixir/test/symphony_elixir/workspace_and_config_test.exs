@@ -584,23 +584,59 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_command() == "codex app-server"
   end
 
-  test "config resolves path values with ~ and env var references" do
-    env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
+  test "config resolves $VAR references for env-backed secret and path values" do
+    workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
+    api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
     workspace_root = Path.join("/tmp", "symphony-workspace-root")
+    api_key = "resolved-secret"
     codex_bin = Path.join(["~", "bin", "codex"])
 
-    previous_workspace_root = System.get_env(env_var)
+    previous_workspace_root = System.get_env(workspace_env_var)
+    previous_api_key = System.get_env(api_key_env_var)
 
-    System.put_env(env_var, workspace_root)
-    on_exit(fn -> restore_env(env_var, previous_workspace_root) end)
+    System.put_env(workspace_env_var, workspace_root)
+    System.put_env(api_key_env_var, api_key)
+
+    on_exit(fn ->
+      restore_env(workspace_env_var, previous_workspace_root)
+      restore_env(api_key_env_var, previous_api_key)
+    end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      workspace_root: "env:#{env_var}",
+      tracker_api_token: "$#{api_key_env_var}",
+      workspace_root: "$#{workspace_env_var}",
       codex_command: "#{codex_bin} app-server"
     )
 
+    assert Config.linear_api_token() == api_key
     assert Config.workspace_root() == Path.expand(workspace_root)
     assert Config.codex_command() == "#{codex_bin} app-server"
+  end
+
+  test "config no longer resolves legacy env: references" do
+    workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
+    api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
+    workspace_root = Path.join("/tmp", "symphony-workspace-root")
+    api_key = "resolved-secret"
+
+    previous_workspace_root = System.get_env(workspace_env_var)
+    previous_api_key = System.get_env(api_key_env_var)
+
+    System.put_env(workspace_env_var, workspace_root)
+    System.put_env(api_key_env_var, api_key)
+
+    on_exit(fn ->
+      restore_env(workspace_env_var, previous_workspace_root)
+      restore_env(api_key_env_var, previous_api_key)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "env:#{api_key_env_var}",
+      workspace_root: "env:#{workspace_env_var}"
+    )
+
+    assert Config.linear_api_token() == "env:#{api_key_env_var}"
+    assert Config.workspace_root() == "env:#{workspace_env_var}"
   end
 
   test "config supports per-state max concurrent agent overrides" do

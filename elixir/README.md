@@ -84,20 +84,21 @@ Notes:
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `env:LINEAR_API_KEY`.
-- For path values, `~` is expanded to the home directory and values prefixed with `env:VAR` are
-  replaced by `$VAR` before use. Example:
+- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
+  while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
+  launched shell. Example:
 
   ```yaml
   workspace:
-    root: "env:SYMPHONY_WORKSPACE_ROOT"
+    root: "$SYMPHONY_WORKSPACE_ROOT"
   hooks:
     after_create: |
       git clone --depth 1 "$SOURCE_REPO_URL" .
   tracker:
-    api_key: "env:LINEAR_API_KEY"
+    api_key: "$LINEAR_API_KEY"
   codex:
-    command: "env:CODEX_BIN app-server --model gpt-5.3-codex"
+    command: "$CODEX_BIN app-server --model gpt-5.3-codex"
   ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML, startup and scheduling are halted until fixed.
