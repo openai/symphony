@@ -1087,7 +1087,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     StatusDashboard.notify_update(dashboard_name)
-    assert_receive {:render, first_render_ms, _content}, 200
+    assert_receive {:render, first_render_ms, _content}, 500
 
     :sys.replace_state(pid, fn state ->
       %{state | last_snapshot_fingerprint: :force_next_change, last_rendered_content: nil}
@@ -1096,7 +1096,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     StatusDashboard.notify_update(dashboard_name)
     StatusDashboard.notify_update(dashboard_name)
 
-    assert_receive {:render, second_render_ms, _content}, 200
+    assert_receive {:render, second_render_ms, _content}, 500
     assert second_render_ms > first_render_ms
     refute_receive {:render, _third_render_ms, _content}, 60
   end

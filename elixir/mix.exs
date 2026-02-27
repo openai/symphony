@@ -12,11 +12,7 @@ defmodule SymphonyElixir.MixProject do
           threshold: 100
         ],
         ignore_modules: [
-          Mix.Tasks.Specs.Check,
-          SymphonyElixir,
-          SymphonyElixir.Application,
           SymphonyElixir.Config,
-          SymphonyElixir.Workflow,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
@@ -25,7 +21,6 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.CLI,
           SymphonyElixir.Codex.AppServer,
           SymphonyElixir.Codex.DynamicTool,
-          SymphonyElixir.PromptBuilder,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace

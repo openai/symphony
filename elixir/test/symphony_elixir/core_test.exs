@@ -118,6 +118,53 @@ defmodule SymphonyElixir.CoreTest do
     assert Workflow.workflow_file_path() == app_workflow_path
   end
 
+  test "workflow load accepts prompt-only files without front matter" do
+    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "PROMPT_ONLY_WORKFLOW.md")
+    File.write!(workflow_path, "Prompt only\n")
+
+    assert {:ok, %{config: %{}, prompt: "Prompt only", prompt_template: "Prompt only"}} =
+             Workflow.load(workflow_path)
+  end
+
+  test "workflow load accepts unterminated front matter with an empty prompt" do
+    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
+    File.write!(workflow_path, "---\ntracker:\n  kind: linear\n")
+
+    assert {:ok, %{config: %{"tracker" => %{"kind" => "linear"}}, prompt: "", prompt_template: ""}} =
+             Workflow.load(workflow_path)
+  end
+
+  test "workflow load rejects non-map front matter" do
+    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "INVALID_FRONT_MATTER_WORKFLOW.md")
+    File.write!(workflow_path, "---\n- not-a-map\n---\nPrompt body\n")
+
+    assert {:error, :workflow_front_matter_not_a_map} = Workflow.load(workflow_path)
+  end
+
+  test "SymphonyElixir.start_link delegates to the orchestrator" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+
+    on_exit(fn ->
+      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+      end
+    end)
+
+    if is_pid(orchestrator_pid) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+    end
+
+    assert {:ok, pid} = SymphonyElixir.start_link()
+    assert Process.whereis(SymphonyElixir.Orchestrator) == pid
+
+    GenServer.stop(pid)
+  end
+
   test "linear issue state reconciliation fetch with no running issues is a no-op" do
     assert {:ok, []} = Client.fetch_issue_states_by_ids([])
   end
@@ -413,6 +460,27 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket MT-697"
     assert prompt =~ "created=2026-02-26T18:06:48Z"
     assert prompt =~ "updated=2026-02-26T18:07:03Z"
+  end
+
+  test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-701",
+      title: "Serialize nested values",
+      description: "Prompt builder should normalize nested terms",
+      state: "Todo",
+      url: "https://example.org/issues/MT-701",
+      labels: [
+        ~N[2026-02-27 12:34:56],
+        ~D[2026-02-28],
+        ~T[12:34:56],
+        %{phase: "test"},
+        URI.parse("https://example.org/issues/MT-701")
+      ]
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "Ticket MT-701"
   end
 
   test "prompt builder uses strict variable rendering" do
