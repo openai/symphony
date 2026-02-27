@@ -55,6 +55,30 @@ defmodule SymphonyElixir.CLITest do
     assert :ok = CLI.evaluate([@ack_flag], deps)
   end
 
+  test "uses an explicit workflow path override when provided" do
+    parent = self()
+    workflow_path = "tmp/custom/WORKFLOW.md"
+    expanded_path = Path.expand(workflow_path)
+
+    deps = %{
+      file_regular?: fn path ->
+        send(parent, {:workflow_checked, path})
+        path == expanded_path
+      end,
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_set, path})
+        :ok
+      end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+    }
+
+    assert :ok = CLI.evaluate([@ack_flag, workflow_path], deps)
+    assert_received {:workflow_checked, ^expanded_path}
+    assert_received {:workflow_set, ^expanded_path}
+  end
+
   test "accepts --logs-root and passes an expanded root to runtime deps" do
     parent = self()
 
