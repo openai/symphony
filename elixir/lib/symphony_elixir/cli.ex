@@ -63,7 +63,7 @@ defmodule SymphonyElixir.CLI do
           :ok
 
         {:error, reason} ->
-          {:error, "Failed to start Symphony with workflow #{expanded_path}: #{inspect(reason)}"}
+          {:error, "Failed to start Symphony with workflow #{expanded_path}: #{format_start_error(reason)}"}
       end
     else
       {:error, "Workflow file not found: #{expanded_path}"}
@@ -168,6 +168,26 @@ defmodule SymphonyElixir.CLI do
     Application.put_env(:symphony_elixir, :server_port_override, port)
     :ok
   end
+
+  defp format_start_error({:symphony_elixir, reason}), do: format_start_error(reason)
+
+  defp format_start_error({reason, {SymphonyElixir.Application, :start, _args}}),
+    do: format_start_error(reason)
+
+  defp format_start_error({:shutdown, {:failed_to_start_child, SymphonyElixir.ProjectLock, reason}}),
+    do: format_start_error(reason)
+
+  defp format_start_error({:failed_to_start_child, SymphonyElixir.ProjectLock, reason}),
+    do: format_start_error(reason)
+
+  defp format_start_error({:project_already_running, owner}),
+    do: SymphonyElixir.ProjectLock.duplicate_start_message(owner)
+
+  defp format_start_error({:project_lock_unavailable, project_slug, lock_path, reason}) do
+    "could not acquire startup lock for Linear project #{project_slug} at #{lock_path}: #{inspect(reason)}"
+  end
+
+  defp format_start_error(reason), do: inspect(reason)
 
   @spec wait_for_shutdown() :: no_return()
   defp wait_for_shutdown do

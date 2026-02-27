@@ -112,4 +112,59 @@ defmodule SymphonyElixir.CLITest do
 
     assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
   end
+
+  test "surfaces duplicate project startup errors clearly" do
+    deps = %{
+      file_regular?: fn _path -> true end,
+      set_workflow_file_path: fn _path -> :ok end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn ->
+        {:error,
+         {:symphony_elixir,
+          {:shutdown,
+           {:failed_to_start_child, SymphonyElixir.ProjectLock,
+            {:project_already_running,
+             %{
+               project_slug: "project-alpha",
+               hostname: "host-a",
+               pid: 4242,
+               workflow_path: "/tmp/WORKFLOW.md",
+               cwd: "/tmp/workspace"
+             }}}}}}
+      end
+    }
+
+    assert {:error, message} = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
+    assert message =~ "another Symphony process is already serving Linear project project-alpha"
+    assert message =~ "host-a"
+    assert message =~ "pid 4242"
+  end
+
+  test "unwraps duplicate project startup errors from application-start tuples" do
+    deps = %{
+      file_regular?: fn _path -> true end,
+      set_workflow_file_path: fn _path -> :ok end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn ->
+        {:error,
+         {{:shutdown,
+           {:failed_to_start_child, SymphonyElixir.ProjectLock,
+            {:project_already_running,
+             %{
+               project_slug: "project-beta",
+               hostname: "host-b",
+               pid: 5252,
+               workflow_path: "/tmp/WORKFLOW.md",
+               cwd: "/tmp/workspace"
+             }}}}, {SymphonyElixir.Application, :start, [:normal, []]}}}
+      end
+    }
+
+    assert {:error, message} = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
+    assert message =~ "another Symphony process is already serving Linear project project-beta"
+    assert message =~ "host-b"
+    assert message =~ "pid 5252"
+  end
 end

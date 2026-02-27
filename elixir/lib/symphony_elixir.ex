@@ -24,6 +24,7 @@ defmodule SymphonyElixir.Application do
     :ok = SymphonyElixir.LogFile.configure()
 
     children = [
+      SymphonyElixir.ProjectLock,
       {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
       SymphonyElixir.WorkflowStore,
       SymphonyElixir.Orchestrator,
