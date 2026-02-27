@@ -94,32 +94,25 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
-  test "workflow file path resolves from SYMPHONY_WORKFLOW_FILE_PATH when app env is unset" do
+  test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
-    previous_env_path = System.get_env("SYMPHONY_WORKFLOW_FILE_PATH")
-    external_workflow_path = "/tmp/external/WORKFLOW.md"
 
     on_exit(fn ->
-      restore_env("SYMPHONY_WORKFLOW_FILE_PATH", previous_env_path)
       Workflow.set_workflow_file_path(original_workflow_path)
     end)
 
     Workflow.clear_workflow_file_path()
-    System.put_env("SYMPHONY_WORKFLOW_FILE_PATH", external_workflow_path)
 
-    assert Workflow.workflow_file_path() == external_workflow_path
+    assert Workflow.workflow_file_path() == Path.join(File.cwd!(), "WORKFLOW.md")
   end
 
-  test "workflow file path prefers app env over SYMPHONY_WORKFLOW_FILE_PATH" do
-    previous_env_path = System.get_env("SYMPHONY_WORKFLOW_FILE_PATH")
+  test "workflow file path resolves from app env when set" do
     app_workflow_path = "/tmp/app/WORKFLOW.md"
 
     on_exit(fn ->
-      restore_env("SYMPHONY_WORKFLOW_FILE_PATH", previous_env_path)
       Workflow.clear_workflow_file_path()
     end)
 
-    System.put_env("SYMPHONY_WORKFLOW_FILE_PATH", "/tmp/env/WORKFLOW.md")
     Workflow.set_workflow_file_path(app_workflow_path)
 
     assert Workflow.workflow_file_path() == app_workflow_path

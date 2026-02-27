@@ -726,7 +726,7 @@ defmodule SymphonyElixir.StatusDashboard do
         format_cell("ID", @running_id_width),
         format_cell("STAGE", @running_stage_width),
         format_cell("PID", @running_pid_width),
-        format_cell("AGE", @running_age_width),
+        format_cell("AGE / TURN", @running_age_width),
         format_cell("TOKENS", @running_tokens_width),
         format_cell("SESSION", @running_session_width),
         format_cell("EVENT", running_event_width)
