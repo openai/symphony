@@ -19,9 +19,10 @@ The service solves four operational problems:
   settings with their code.
 - It provides enough observability to operate and debug multiple concurrent agent runs.
 
-The service is designed for trusted environments. It intentionally runs the coding agent in a
-non-interactive, auto-approved mode and relies on workspace/path safety controls to prevent the most
-dangerous mistakes.
+Implementations are expected to document their trust and safety posture explicitly. This
+specification does not require a single approval, sandbox, or operator-confirmation policy; some
+implementations may target trusted environments with a high-trust configuration, while others may
+require stricter approvals or sandboxing.
 
 Important boundary:
 
@@ -51,8 +52,9 @@ Important boundary:
 - General-purpose workflow engine or distributed job scheduler.
 - Built-in business logic for how to edit tickets, PRs, or comments. (That logic lives in the
   workflow prompt and agent tooling.)
-- Strong sandbox controls beyond what the coding agent and host OS provide. The default runtime is
-  explicitly high-trust.
+- Mandating strong sandbox controls beyond what the coding agent and host OS provide.
+- Mandating a single default approval, sandbox, or operator-confirmation posture for all
+  implementations.
 
 ## 3. System Overview
 
@@ -900,8 +902,8 @@ semantics):
 ```json
 {"id":1,"method":"initialize","params":{"clientInfo":{"name":"symphony","version":"1.0"},"capabilities":{}}}
 {"method":"initialized","params":{}}
-{"id":2,"method":"thread/start","params":{"approvalPolicy":"never","sandbox":"danger-full-access","cwd":"/abs/workspace"}}
-{"id":3,"method":"turn/start","params":{"threadId":"<thread-id>","input":[{"type":"text","text":"<rendered prompt>"}],"cwd":"/abs/workspace","title":"ABC-123: Example","approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}}
+{"id":2,"method":"thread/start","params":{"approvalPolicy":"<implementation-defined>","sandbox":"<implementation-defined>","cwd":"/abs/workspace"}}
+{"id":3,"method":"turn/start","params":{"threadId":"<thread-id>","input":[{"type":"text","text":"<rendered prompt>"}],"cwd":"/abs/workspace","title":"ABC-123: Example","approvalPolicy":"<implementation-defined>","sandboxPolicy":{"type":"<implementation-defined>"}}}
 ```
 
 1. `initialize` request
@@ -914,8 +916,8 @@ semantics):
 2. `initialized` notification
 3. `thread/start` request
    - Params include:
-     - `approvalPolicy` = `never`
-     - `sandbox` = `danger-full-access`
+     - `approvalPolicy` = implementation-defined session approval policy value
+     - `sandbox` = implementation-defined session sandbox value
      - `cwd` = absolute workspace path
      - If optional client-side tools are implemented, include their advertised tool specs using the
        protocol mechanism supported by the targeted Codex app-server version.
@@ -925,8 +927,9 @@ semantics):
      - `input` = single text item containing rendered prompt
      - `cwd`
      - `title` = `<issue.identifier>: <issue.title>`
-     - `approvalPolicy` = `never`
-     - `sandboxPolicy` = object form (for example `{type: "dangerFullAccess"}`)
+     - `approvalPolicy` = implementation-defined turn approval policy value
+     - `sandboxPolicy` = implementation-defined object-form sandbox policy payload when required by
+       the targeted app-server version
 
 Session identifiers:
 
@@ -966,7 +969,7 @@ include:
 - optional `usage` map (token counts)
 - payload fields as needed
 
-Important emitted events:
+Important emitted events may include:
 
 - `session_started`
 - `startup_failed`
@@ -983,12 +986,21 @@ Important emitted events:
 
 ### 10.5 Approval, Tool Calls, and User Input Policy
 
-Symphony runs in non-interactive mode.
+Approval, sandbox, and user-input behavior is implementation-defined.
 
-Auto-approval behavior:
+Policy requirements:
+
+- Each implementation should document its chosen approval, sandbox, and operator-confirmation
+  posture.
+- Approval requests and user-input-required events must not leave a run stalled indefinitely. An
+  implementation should either satisfy them, surface them to an operator, auto-resolve them, or
+  fail the run according to its documented policy.
+
+Example high-trust behavior:
 
 - Auto-approve command execution approvals for the session.
 - Auto-approve file-change approvals for the session.
+- Treat user-input-required turns as hard failure.
 
 Unsupported dynamic tool calls:
 
@@ -1544,13 +1556,16 @@ Operators can control behavior by:
 
 ### 15.1 Trust Boundary Assumption
 
-Symphony is designed for trusted environments.
+Each implementation defines its own trust boundary.
 
-Current safety tradeoff:
+Operational safety requirements:
 
-- The coding agent runs with non-interactive approvals and danger-full-access sandbox policy.
-- Safety is enforced primarily through workspace isolation and path validation, not strict sandbox
-  controls.
+- Implementations should state clearly whether they are intended for trusted environments, more
+  restrictive environments, or both.
+- Implementations should state clearly whether they rely on auto-approved actions, operator
+  approvals, stricter sandboxing, or some combination of those controls.
+- Workspace isolation and path validation are important baseline controls, but they are not a
+  substitute for whatever approval and sandbox policy an implementation chooses.
 
 ### 15.2 Filesystem Safety Requirements
 
@@ -1879,16 +1894,17 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Startup handshake sends `initialize`, `initialized`, `thread/start`, `turn/start`
 - `initialize` includes client identity/capabilities payload required by the targeted Codex
   app-server protocol
-- `turn/start` uses object-form sandbox policy payload
+- Policy-related startup payloads use the implementation's documented approval/sandbox settings
 - `thread/start` and `turn/start` parse nested IDs and emit `session_started`
 - Request/response read timeout is enforced
 - Turn timeout is enforced
 - Partial JSON lines are buffered until newline
 - Stdout and stderr are handled separately; protocol JSON is parsed from stdout only
 - Non-JSON stderr lines are logged but do not crash parsing
-- Command/file-change approvals are auto-approved
+- Command/file-change approvals are handled according to the implementation's documented policy
 - Unsupported dynamic tool calls are rejected without stalling the session
-- User input requests cause hard failure (`turn_input_required`)
+- User input requests are handled according to the implementation's documented policy and do not
+  stall indefinitely
 - Usage and rate-limit payloads are extracted from nested payload shapes
 - Compatible payload variants for approvals, user-input-required signals, and usage/rate-limit
   telemetry are accepted when they preserve the same logical meaning

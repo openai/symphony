@@ -4,7 +4,7 @@ Symphony turns project work into isolated, autonomous implementation runs, allow
 work instead of supervising coding agents.
 
 > [!WARNING]
-> Symphony is a low-key engineering preview.
+> Symphony is a low-key engineering preview for testing in trusted environments.
 
 ## Running Symphony
 

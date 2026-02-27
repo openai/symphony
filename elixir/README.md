@@ -4,7 +4,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 [`SPEC.md`](../SPEC.md) in the repository root.
 
 > [!WARNING]
-> Symphony is a low-key engineering preview.
+> SymphonyElixir is preview software for testing in trusted environments. It is presented as-is.
 
 ## Screenshot
 
