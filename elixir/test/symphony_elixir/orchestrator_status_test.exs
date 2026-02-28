@@ -1381,6 +1381,23 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert humanized =~ "auto-approved"
   end
 
+  test "status dashboard formats auto-answered tool input updates from codex" do
+    message = %{
+      event: :tool_input_auto_answered,
+      message: %{
+        payload: %{
+          "method" => "item/tool/requestUserInput",
+          "params" => %{"question" => "Continue?"}
+        },
+        answer: "This is a non-interactive session. Operator input is unavailable."
+      }
+    }
+
+    humanized = StatusDashboard.humanize_codex_message(message)
+    assert humanized =~ "tool requires user input"
+    assert humanized =~ "auto-answered"
+  end
+
   test "status dashboard enriches wrapper reasoning and message streaming events with payload context" do
     reasoning_message = %{
       event: :notification,

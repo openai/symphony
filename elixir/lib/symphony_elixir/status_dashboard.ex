@@ -1106,6 +1106,18 @@ defmodule SymphonyElixir.StatusDashboard do
     if is_binary(decision), do: "#{base}: #{decision}", else: base
   end
 
+  defp humanize_codex_event(:tool_input_auto_answered, message, payload) do
+    answer = map_value(message, ["answer", :answer])
+
+    base =
+      case humanize_codex_method("item/tool/requestUserInput", payload) do
+        nil -> "tool input auto-answered"
+        text -> "#{text} (auto-answered)"
+      end
+
+    if is_binary(answer), do: "#{base}: #{inline_text(answer)}", else: base
+  end
+
   defp humanize_codex_event(:tool_call_completed, _message, payload),
     do: humanize_dynamic_tool_event("dynamic tool call completed", payload)
 
