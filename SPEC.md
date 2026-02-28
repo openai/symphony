@@ -417,10 +417,24 @@ Fields:
 
 Fields:
 
+For Codex-owned config values such as `approval_policy`, `thread_sandbox`, and
+`turn_sandbox_policy`, supported values are defined by the targeted Codex app-server version.
+Implementors should treat them as pass-through Codex config values rather than relying on a
+hand-maintained enum in this spec. To inspect the installed Codex schema, run
+`codex app-server generate-json-schema --out <dir>` and inspect the relevant definitions referenced
+by `v2/ThreadStartParams.json` and `v2/TurnStartParams.json`. Implementations may validate these
+fields locally if they want stricter startup checks.
+
 - `command` (string shell command)
   - Default: `codex app-server`
   - The runtime launches this command via `bash -lc` in the workspace directory.
   - The launched process must speak a compatible app-server protocol over stdio.
+- `approval_policy` (Codex `AskForApproval` value)
+  - Default: implementation-defined.
+- `thread_sandbox` (Codex `SandboxMode` value)
+  - Default: implementation-defined.
+- `turn_sandbox_policy` (Codex `SandboxPolicy` value)
+  - Default: implementation-defined.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -555,6 +569,9 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
+- `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
+- `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
+- `codex.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`

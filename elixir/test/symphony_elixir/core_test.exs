@@ -47,6 +47,24 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "/bin/sh app-server")
     assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "definitely-not-valid")
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "unsafe-ish")
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["relative/path"]}
+    )
+
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: 123)
+    assert {:error, {:invalid_codex_approval_policy, 123}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: 123)
+    assert {:error, {:invalid_codex_thread_sandbox, 123}} = Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -1064,9 +1082,17 @@ defmodule SymphonyElixir.CoreTest do
                  |> String.trim_leading("JSON:")
                  |> Jason.decode!()
                  |> then(fn payload ->
+                   expected_approval_policy = %{
+                     "reject" => %{
+                       "sandbox_approval" => true,
+                       "rules" => true,
+                       "mcp_elicitations" => true
+                     }
+                   }
+
                    payload["method"] == "thread/start" &&
-                     get_in(payload, ["params", "approvalPolicy"]) == "never" &&
-                     get_in(payload, ["params", "sandbox"]) == "danger-full-access" &&
+                     get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
+                     get_in(payload, ["params", "sandbox"]) == "workspace-write" &&
                      get_in(payload, ["params", "cwd"]) == Path.expand(workspace)
                  end)
                else
@@ -1074,16 +1100,33 @@ defmodule SymphonyElixir.CoreTest do
                end
              end)
 
+      expected_turn_sandbox_policy = %{
+        "type" => "workspaceWrite",
+        "writableRoots" => [Path.expand(workspace)],
+        "readOnlyAccess" => %{"type" => "fullAccess"},
+        "networkAccess" => false,
+        "excludeTmpdirEnvVar" => false,
+        "excludeSlashTmp" => false
+      }
+
       assert Enum.any?(lines, fn line ->
                if String.starts_with?(line, "JSON:") do
                  line
                  |> String.trim_leading("JSON:")
                  |> Jason.decode!()
                  |> then(fn payload ->
+                   expected_approval_policy = %{
+                     "reject" => %{
+                       "sandbox_approval" => true,
+                       "rules" => true,
+                       "mcp_elicitations" => true
+                     }
+                   }
+
                    payload["method"] == "turn/start" &&
                      get_in(payload, ["params", "cwd"]) == Path.expand(workspace) &&
-                     get_in(payload, ["params", "approvalPolicy"]) == "never" &&
-                     get_in(payload, ["params", "sandboxPolicy", "type"]) == "dangerFullAccess"
+                     get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
+                     get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_sandbox_policy
                  end)
                else
                  false
@@ -1174,6 +1217,127 @@ defmodule SymphonyElixir.CoreTest do
       assert String.contains?(argv_line, "--model gpt-5.3-codex app-server")
       refute String.contains?(argv_line, "--ask-for-approval never")
       refute String.contains?(argv_line, "--sandbox danger-full-access")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server startup payload uses configurable approval and sandbox settings from workflow config" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-policy-overrides-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-99")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-policy-overrides.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODex_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-policy-overrides.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-99"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-99"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "on-request",
+        codex_thread_sandbox: "workspace-write",
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [Path.expand(workspace), Path.join(Path.expand(workspace_root), ".cache")]
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-policy-overrides",
+        identifier: "MT-99",
+        title: "Validate codex policy overrides",
+        description: "Check startup policy payload overrides",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-99",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Fix workspace start args", issue)
+
+      lines = File.read!(trace_file) |> String.split("\n", trim: true)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 line
+                 |> String.trim_leading("JSON:")
+                 |> Jason.decode!()
+                 |> then(fn payload ->
+                   payload["method"] == "thread/start" &&
+                     get_in(payload, ["params", "approvalPolicy"]) == "on-request" &&
+                     get_in(payload, ["params", "sandbox"]) == "workspace-write"
+                 end)
+               else
+                 false
+               end
+             end)
+
+      expected_turn_policy = %{
+        "type" => "workspaceWrite",
+        "writableRoots" => [Path.expand(workspace), Path.join(Path.expand(workspace_root), ".cache")]
+      }
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 line
+                 |> String.trim_leading("JSON:")
+                 |> Jason.decode!()
+                 |> then(fn payload ->
+                   payload["method"] == "turn/start" &&
+                     get_in(payload, ["params", "approvalPolicy"]) == "on-request" &&
+                     get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_policy
+                 end)
+               else
+                 false
+               end
+             end)
     after
       File.rm_rf(test_root)
     end

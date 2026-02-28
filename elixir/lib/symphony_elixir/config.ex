@@ -27,10 +27,23 @@ defmodule SymphonyElixir.Config do
   @default_agent_max_turns 20
   @default_max_retry_backoff_ms 300_000
   @default_codex_command "codex app-server"
+  @default_codex_approval_policy %{
+    "reject" => %{
+      "sandbox_approval" => true,
+      "rules" => true,
+      "mcp_elicitations" => true
+    }
+  }
+  @default_codex_thread_sandbox "workspace-write"
   @default_server_host "127.0.0.1"
 
   @type workflow_payload :: Workflow.loaded_workflow()
   @type tracker_kind :: String.t() | nil
+  @type codex_runtime_settings :: %{
+          approval_policy: String.t() | map(),
+          thread_sandbox: String.t(),
+          turn_sandbox_policy: map()
+        }
   @type workspace_hooks :: %{
           after_create: String.t() | nil,
           before_run: String.t() | nil,
@@ -167,6 +180,30 @@ defmodule SymphonyElixir.Config do
     fetch_integer([["codex", "turn_timeout_ms"]], 3_600_000)
   end
 
+  @spec codex_approval_policy() :: String.t() | map()
+  def codex_approval_policy do
+    case resolve_codex_approval_policy() do
+      {:ok, approval_policy} -> approval_policy
+      {:error, _reason} -> @default_codex_approval_policy
+    end
+  end
+
+  @spec codex_thread_sandbox() :: String.t()
+  def codex_thread_sandbox do
+    case resolve_codex_thread_sandbox() do
+      {:ok, thread_sandbox} -> thread_sandbox
+      {:error, _reason} -> @default_codex_thread_sandbox
+    end
+  end
+
+  @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
+  def codex_turn_sandbox_policy(workspace \\ nil) do
+    case resolve_codex_turn_sandbox_policy(workspace) do
+      {:ok, turn_sandbox_policy} -> turn_sandbox_policy
+      {:error, _reason} -> default_codex_turn_sandbox_policy(workspace)
+    end
+  end
+
   @spec codex_read_timeout_ms() :: pos_integer()
   def codex_read_timeout_ms do
     fetch_integer([["codex", "read_timeout_ms"]], 5_000)
@@ -227,8 +264,23 @@ defmodule SymphonyElixir.Config do
     with {:ok, _workflow} <- current_workflow(),
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
-         :ok <- require_linear_project() do
+         :ok <- require_linear_project(),
+         :ok <- require_valid_codex_runtime_settings() do
       require_codex_command()
+    end
+  end
+
+  @spec codex_runtime_settings(Path.t() | nil) :: {:ok, codex_runtime_settings()} | {:error, term()}
+  def codex_runtime_settings(workspace \\ nil) do
+    with {:ok, approval_policy} <- resolve_codex_approval_policy(),
+         {:ok, thread_sandbox} <- resolve_codex_thread_sandbox(),
+         {:ok, turn_sandbox_policy} <- resolve_codex_turn_sandbox_policy(workspace) do
+      {:ok,
+       %{
+         approval_policy: approval_policy,
+         thread_sandbox: thread_sandbox,
+         turn_sandbox_policy: turn_sandbox_policy
+       }}
     end
   end
 
@@ -274,6 +326,13 @@ defmodule SymphonyElixir.Config do
       :ok
     else
       {:error, :missing_codex_command}
+    end
+  end
+
+  defp require_valid_codex_runtime_settings do
+    case codex_runtime_settings() do
+      {:ok, _settings} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -347,6 +406,89 @@ defmodule SymphonyElixir.Config do
       value when is_map(value) -> value
       _ -> default
     end
+  end
+
+  defp resolve_codex_approval_policy do
+    case fetch_value([["codex", "approval_policy"]], :missing) do
+      :missing ->
+        {:ok, @default_codex_approval_policy}
+
+      nil ->
+        {:ok, @default_codex_approval_policy}
+
+      value when is_binary(value) ->
+        approval_policy = String.trim(value)
+
+        if approval_policy == "" do
+          {:error, {:invalid_codex_approval_policy, value}}
+        else
+          {:ok, approval_policy}
+        end
+
+      value when is_map(value) ->
+        {:ok, value}
+
+      value ->
+        {:error, {:invalid_codex_approval_policy, value}}
+    end
+  end
+
+  defp resolve_codex_thread_sandbox do
+    case fetch_value([["codex", "thread_sandbox"]], :missing) do
+      :missing ->
+        {:ok, @default_codex_thread_sandbox}
+
+      nil ->
+        {:ok, @default_codex_thread_sandbox}
+
+      value when is_binary(value) ->
+        thread_sandbox = String.trim(value)
+
+        if thread_sandbox == "" do
+          {:error, {:invalid_codex_thread_sandbox, value}}
+        else
+          {:ok, thread_sandbox}
+        end
+
+      value ->
+        {:error, {:invalid_codex_thread_sandbox, value}}
+    end
+  end
+
+  defp resolve_codex_turn_sandbox_policy(workspace) do
+    case fetch_value([["codex", "turn_sandbox_policy"]], :missing) do
+      :missing ->
+        {:ok, default_codex_turn_sandbox_policy(workspace)}
+
+      nil ->
+        {:ok, default_codex_turn_sandbox_policy(workspace)}
+
+      value when is_map(value) ->
+        {:ok, value}
+
+      value ->
+        {:error, {:invalid_codex_turn_sandbox_policy, {:unsupported_value, value}}}
+    end
+  end
+
+  defp default_codex_turn_sandbox_policy(workspace) do
+    writable_root =
+      cond do
+        is_binary(workspace) and String.trim(workspace) != "" ->
+          Path.expand(workspace)
+
+        true ->
+          Path.expand(workspace_root())
+      end
+
+    %{
+      "type" => "workspaceWrite",
+      "writableRoots" => [writable_root],
+      "readOnlyAccess" => %{"type" => "fullAccess"},
+      "networkAccess" => false,
+      "excludeTmpdirEnvVar" => false,
+      "excludeSlashTmp" => false
+    }
   end
 
   defp fetch_csv(paths, default) do
