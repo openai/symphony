@@ -473,12 +473,10 @@ defmodule SymphonyElixir.Config do
 
   defp default_codex_turn_sandbox_policy(workspace) do
     writable_root =
-      cond do
-        is_binary(workspace) and String.trim(workspace) != "" ->
-          Path.expand(workspace)
-
-        true ->
-          Path.expand(workspace_root())
+      if is_binary(workspace) and String.trim(workspace) != "" do
+        Path.expand(workspace)
+      else
+        Path.expand(workspace_root())
       end
 
     %{

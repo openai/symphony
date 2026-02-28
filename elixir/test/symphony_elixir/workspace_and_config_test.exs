@@ -560,6 +560,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert Config.max_concurrent_agents() == 10
     assert Config.codex_command() == "codex app-server"
+
     assert Config.codex_approval_policy() == %{
              "reject" => %{
                "sandbox_approval" => true,
@@ -567,6 +568,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                "mcp_elicitations" => true
              }
            }
+
     assert Config.codex_thread_sandbox() == "workspace-write"
 
     assert Config.codex_turn_sandbox_policy() == %{
@@ -615,6 +617,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_stall_timeout_ms() == 300_000
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
+
     assert Config.codex_approval_policy() == %{
              "reject" => %{
                "sandbox_approval" => true,
@@ -622,6 +625,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                "mcp_elicitations" => true
              }
            }
+
     assert {:error, {:invalid_codex_approval_policy, ""}} = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "")
