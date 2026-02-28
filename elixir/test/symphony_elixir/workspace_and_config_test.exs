@@ -402,6 +402,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "dispatch revalidation skips stale todo issue once a non-terminal blocker appears" do
+    stale_issue = %Issue{
+      id: "blocked-2",
+      identifier: "MT-1005",
+      title: "Stale blocked work",
+      state: "Todo",
+      blocked_by: []
+    }
+
+    refreshed_issue = %Issue{
+      id: "blocked-2",
+      identifier: "MT-1005",
+      title: "Stale blocked work",
+      state: "Todo",
+      blocked_by: [%{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}]
+    }
+
+    fetcher = fn ["blocked-2"] -> {:ok, [refreshed_issue]} end
+
+    assert {:skip, %Issue{} = skipped_issue} =
+             Orchestrator.revalidate_issue_for_dispatch_for_test(stale_issue, fetcher)
+
+    assert skipped_issue.identifier == "MT-1005"
+    assert skipped_issue.blocked_by == [%{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}]
+  end
+
   test "workspace remove returns error information for missing directory" do
     random_path =
       Path.join(

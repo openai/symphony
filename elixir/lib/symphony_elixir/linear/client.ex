@@ -51,14 +51,38 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @query_by_ids """
-  query SymphonyLinearIssueStatesById($ids: [ID!]!, $first: Int!) {
+  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
     issues(filter: {id: {in: $ids}}, first: $first) {
       nodes {
         id
         identifier
+        title
+        description
+        priority
         state {
           name
         }
+        branchName
+        url
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+        createdAt
+        updatedAt
       }
     }
   }
@@ -187,7 +211,11 @@ defmodule SymphonyElixir.Linear.Client do
   defp finalize_paginated_issues(acc_issues) when is_list(acc_issues), do: Enum.reverse(acc_issues)
 
   defp do_fetch_issue_states(ids) do
-    case graphql(@query_by_ids, %{ids: ids, first: Enum.min([length(ids), @issue_page_size])}) do
+    case graphql(@query_by_ids, %{
+           ids: ids,
+           first: Enum.min([length(ids), @issue_page_size]),
+           relationFirst: @issue_page_size
+         }) do
       {:ok, body} ->
         decode_linear_response(body)
 
