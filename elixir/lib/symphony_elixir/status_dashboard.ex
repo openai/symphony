@@ -645,7 +645,6 @@ defmodule SymphonyElixir.StatusDashboard do
     else
       retrying
       |> Enum.sort_by(& &1.due_in_ms)
-      |> Enum.take(3)
       |> Enum.map_join(", ", &format_retry_summary/1)
       |> String.split(", ")
     end

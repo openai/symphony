@@ -123,7 +123,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              identifier: "MT-453",
              attempt: 1,
              due_in_ms: 11_000,
-             error: "this row should be trimmed because only the top three retries render"
+             error: "fourth queued retry should also render after removing the top-three limit"
            })
          ],
          codex_totals: %{input_tokens: 18_000, output_tokens: 2_200, total_tokens: 20_200, seconds_running: 2_700},
