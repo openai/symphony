@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Config do
   Runtime configuration loaded from `WORKFLOW.md`.
   """
 
+  alias NimbleOptions
   alias SymphonyElixir.Workflow
 
   @default_active_states ["Todo", "In Progress"]
@@ -21,12 +22,16 @@ defmodule SymphonyElixir.Config do
   No description provided.
   {% endif %}
   """
+  @default_poll_interval_ms 30_000
   @default_workspace_root Path.join(System.tmp_dir!(), "symphony_workspaces")
   @default_hook_timeout_ms 60_000
   @default_max_concurrent_agents 10
   @default_agent_max_turns 20
   @default_max_retry_backoff_ms 300_000
   @default_codex_command "codex app-server"
+  @default_codex_turn_timeout_ms 3_600_000
+  @default_codex_read_timeout_ms 5_000
+  @default_codex_stall_timeout_ms 300_000
   @default_codex_approval_policy %{
     "reject" => %{
       "sandbox_approval" => true,
@@ -35,7 +40,122 @@ defmodule SymphonyElixir.Config do
     }
   }
   @default_codex_thread_sandbox "workspace-write"
+  @default_observability_enabled true
+  @default_observability_refresh_ms 1_000
+  @default_observability_render_interval_ms 16
   @default_server_host "127.0.0.1"
+  @workflow_options_schema NimbleOptions.new!(
+                             tracker: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 kind: [type: {:or, [:string, nil]}, default: nil],
+                                 endpoint: [type: :string, default: @default_linear_endpoint],
+                                 api_key: [type: {:or, [:string, nil]}, default: nil],
+                                 project_slug: [type: {:or, [:string, nil]}, default: nil],
+                                 active_states: [
+                                   type: {:list, :string},
+                                   default: @default_active_states
+                                 ],
+                                 terminal_states: [
+                                   type: {:list, :string},
+                                   default: @default_terminal_states
+                                 ]
+                               ]
+                             ],
+                             polling: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 interval_ms: [type: :integer, default: @default_poll_interval_ms]
+                               ]
+                             ],
+                             workspace: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 root: [type: {:or, [:string, nil]}, default: @default_workspace_root]
+                               ]
+                             ],
+                             agent: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 max_concurrent_agents: [
+                                   type: :integer,
+                                   default: @default_max_concurrent_agents
+                                 ],
+                                 max_turns: [
+                                   type: :pos_integer,
+                                   default: @default_agent_max_turns
+                                 ],
+                                 max_retry_backoff_ms: [
+                                   type: :pos_integer,
+                                   default: @default_max_retry_backoff_ms
+                                 ],
+                                 max_concurrent_agents_by_state: [
+                                   type: {:map, :string, :pos_integer},
+                                   default: %{}
+                                 ]
+                               ]
+                             ],
+                             codex: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 command: [type: :string, default: @default_codex_command],
+                                 turn_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_codex_turn_timeout_ms
+                                 ],
+                                 read_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_codex_read_timeout_ms
+                                 ],
+                                 stall_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_codex_stall_timeout_ms
+                                 ]
+                               ]
+                             ],
+                             hooks: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 after_create: [type: {:or, [:string, nil]}, default: nil],
+                                 before_run: [type: {:or, [:string, nil]}, default: nil],
+                                 after_run: [type: {:or, [:string, nil]}, default: nil],
+                                 before_remove: [type: {:or, [:string, nil]}, default: nil],
+                                 timeout_ms: [type: :pos_integer, default: @default_hook_timeout_ms]
+                               ]
+                             ],
+                             observability: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 dashboard_enabled: [
+                                   type: :boolean,
+                                   default: @default_observability_enabled
+                                 ],
+                                 refresh_ms: [
+                                   type: :integer,
+                                   default: @default_observability_refresh_ms
+                                 ],
+                                 render_interval_ms: [
+                                   type: :integer,
+                                   default: @default_observability_render_interval_ms
+                                 ]
+                               ]
+                             ],
+                             server: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 port: [type: {:or, [:non_neg_integer, nil]}, default: nil],
+                                 host: [type: :string, default: @default_server_host]
+                               ]
+                             ]
+                           )
 
   @type workflow_payload :: Workflow.loaded_workflow()
   @type tracker_kind :: String.t() | nil
@@ -59,102 +179,85 @@ defmodule SymphonyElixir.Config do
 
   @spec tracker_kind() :: tracker_kind()
   def tracker_kind do
-    fetch_string([["tracker", "kind"]], nil)
-    |> normalize_tracker_kind()
+    get_in(validated_workflow_options(), [:tracker, :kind])
   end
 
   @spec linear_endpoint() :: String.t()
   def linear_endpoint do
-    fetch_string([["tracker", "endpoint"]], @default_linear_endpoint)
+    get_in(validated_workflow_options(), [:tracker, :endpoint])
   end
 
   @spec linear_api_token() :: String.t() | nil
   def linear_api_token do
-    [["tracker", "api_key"]]
-    |> fetch_value(:missing)
+    validated_workflow_options()
+    |> get_in([:tracker, :api_key])
     |> resolve_env_value(System.get_env("LINEAR_API_KEY"))
     |> normalize_secret_value()
   end
 
   @spec linear_project_slug() :: String.t() | nil
   def linear_project_slug do
-    fetch_string([["tracker", "project_slug"]], nil)
+    get_in(validated_workflow_options(), [:tracker, :project_slug])
   end
 
   @spec linear_active_states() :: [String.t()]
   def linear_active_states do
-    fetch_csv([["tracker", "active_states"]], @default_active_states)
+    get_in(validated_workflow_options(), [:tracker, :active_states])
   end
 
   @spec linear_terminal_states() :: [String.t()]
   def linear_terminal_states do
-    fetch_csv([["tracker", "terminal_states"]], @default_terminal_states)
+    get_in(validated_workflow_options(), [:tracker, :terminal_states])
   end
 
   @spec poll_interval_ms() :: pos_integer()
   def poll_interval_ms do
-    fetch_integer([["polling", "interval_ms"]], 30_000)
+    get_in(validated_workflow_options(), [:polling, :interval_ms])
   end
 
   @spec workspace_root() :: Path.t()
   def workspace_root do
-    fetch_path([["workspace", "root"]], @default_workspace_root)
+    validated_workflow_options()
+    |> get_in([:workspace, :root])
+    |> resolve_path_value(@default_workspace_root)
   end
 
   @spec workspace_hooks() :: workspace_hooks()
   def workspace_hooks do
+    hooks = get_in(validated_workflow_options(), [:hooks])
+
     %{
-      after_create: fetch_hook_command("after_create"),
-      before_run: fetch_hook_command("before_run"),
-      after_run: fetch_hook_command("after_run"),
-      before_remove: fetch_hook_command("before_remove"),
-      timeout_ms: hook_timeout_ms()
+      after_create: Map.get(hooks, :after_create),
+      before_run: Map.get(hooks, :before_run),
+      after_run: Map.get(hooks, :after_run),
+      before_remove: Map.get(hooks, :before_remove),
+      timeout_ms: Map.get(hooks, :timeout_ms)
     }
   end
 
   @spec hook_timeout_ms() :: pos_integer()
   def hook_timeout_ms do
-    case fetch_integer([["hooks", "timeout_ms"]], @default_hook_timeout_ms) do
-      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 ->
-        timeout_ms
-
-      _ ->
-        @default_hook_timeout_ms
-    end
+    get_in(validated_workflow_options(), [:hooks, :timeout_ms])
   end
 
   @spec max_concurrent_agents() :: pos_integer()
   def max_concurrent_agents do
-    fetch_integer([["agent", "max_concurrent_agents"]], @default_max_concurrent_agents)
+    get_in(validated_workflow_options(), [:agent, :max_concurrent_agents])
   end
 
   @spec max_retry_backoff_ms() :: pos_integer()
   def max_retry_backoff_ms do
-    case fetch_integer([["agent", "max_retry_backoff_ms"]], @default_max_retry_backoff_ms) do
-      backoff_ms when is_integer(backoff_ms) and backoff_ms > 0 ->
-        backoff_ms
-
-      _ ->
-        @default_max_retry_backoff_ms
-    end
+    get_in(validated_workflow_options(), [:agent, :max_retry_backoff_ms])
   end
 
   @spec agent_max_turns() :: pos_integer()
   def agent_max_turns do
-    case fetch_integer([["agent", "max_turns"]], @default_agent_max_turns) do
-      max_turns when is_integer(max_turns) and max_turns > 0 ->
-        max_turns
-
-      _ ->
-        @default_agent_max_turns
-    end
+    get_in(validated_workflow_options(), [:agent, :max_turns])
   end
 
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
-    state_limits =
-      state_limits_by_name(fetch_map([["agent", "max_concurrent_agents_by_state"]], %{}))
-
+    state_limits = get_in(validated_workflow_options(), [:agent, :max_concurrent_agents_by_state])
     global_limit = max_concurrent_agents()
     Map.get(state_limits, normalize_issue_state(state_name), global_limit)
   end
@@ -163,21 +266,12 @@ defmodule SymphonyElixir.Config do
 
   @spec codex_command() :: String.t()
   def codex_command do
-    case fetch_value([["codex", "command"]], :missing) do
-      command when is_binary(command) ->
-        case String.trim(command) do
-          "" -> @default_codex_command
-          trimmed -> trimmed
-        end
-
-      _ ->
-        @default_codex_command
-    end
+    get_in(validated_workflow_options(), [:codex, :command])
   end
 
   @spec codex_turn_timeout_ms() :: pos_integer()
   def codex_turn_timeout_ms do
-    fetch_integer([["codex", "turn_timeout_ms"]], 3_600_000)
+    get_in(validated_workflow_options(), [:codex, :turn_timeout_ms])
   end
 
   @spec codex_approval_policy() :: String.t() | map()
@@ -206,12 +300,14 @@ defmodule SymphonyElixir.Config do
 
   @spec codex_read_timeout_ms() :: pos_integer()
   def codex_read_timeout_ms do
-    fetch_integer([["codex", "read_timeout_ms"]], 5_000)
+    get_in(validated_workflow_options(), [:codex, :read_timeout_ms])
   end
 
   @spec codex_stall_timeout_ms() :: non_neg_integer()
   def codex_stall_timeout_ms do
-    max(fetch_integer([["codex", "stall_timeout_ms"]], 300_000), 0)
+    validated_workflow_options()
+    |> get_in([:codex, :stall_timeout_ms])
+    |> max(0)
   end
 
   @spec workflow_prompt() :: String.t()
@@ -227,17 +323,17 @@ defmodule SymphonyElixir.Config do
 
   @spec observability_enabled?() :: boolean()
   def observability_enabled? do
-    fetch_boolean([["observability", "dashboard_enabled"]], true)
+    get_in(validated_workflow_options(), [:observability, :dashboard_enabled])
   end
 
   @spec observability_refresh_ms() :: pos_integer()
   def observability_refresh_ms do
-    fetch_integer([["observability", "refresh_ms"]], 1_000)
+    get_in(validated_workflow_options(), [:observability, :refresh_ms])
   end
 
   @spec observability_render_interval_ms() :: pos_integer()
   def observability_render_interval_ms do
-    fetch_integer([["observability", "render_interval_ms"]], 16)
+    get_in(validated_workflow_options(), [:observability, :render_interval_ms])
   end
 
   @spec server_port() :: non_neg_integer() | nil
@@ -247,16 +343,13 @@ defmodule SymphonyElixir.Config do
         port
 
       _ ->
-        case fetch_integer([["server", "port"]], -1) do
-          port when is_integer(port) and port >= 0 -> port
-          _ -> nil
-        end
+        get_in(validated_workflow_options(), [:server, :port])
     end
   end
 
   @spec server_host() :: String.t()
   def server_host do
-    fetch_string([["server", "host"]], @default_server_host)
+    get_in(validated_workflow_options(), [:server, :host])
   end
 
   @spec validate!() :: :ok | {:error, term()}
@@ -336,75 +429,258 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  defp validated_workflow_options do
+    workflow_config()
+    |> extract_workflow_options()
+    |> NimbleOptions.validate!(@workflow_options_schema)
+  end
+
+  defp extract_workflow_options(config) do
+    %{
+      tracker: extract_tracker_options(section_map(config, "tracker")),
+      polling: extract_polling_options(section_map(config, "polling")),
+      workspace: extract_workspace_options(section_map(config, "workspace")),
+      agent: extract_agent_options(section_map(config, "agent")),
+      codex: extract_codex_options(section_map(config, "codex")),
+      hooks: extract_hooks_options(section_map(config, "hooks")),
+      observability: extract_observability_options(section_map(config, "observability")),
+      server: extract_server_options(section_map(config, "server"))
+    }
+  end
+
+  defp extract_tracker_options(section) do
+    %{}
+    |> put_if_present(:kind, normalize_tracker_kind(scalar_string_value(Map.get(section, "kind"))))
+    |> put_if_present(:endpoint, scalar_string_value(Map.get(section, "endpoint")))
+    |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
+    |> put_if_present(:project_slug, scalar_string_value(Map.get(section, "project_slug")))
+    |> put_if_present(:active_states, csv_value(Map.get(section, "active_states")))
+    |> put_if_present(:terminal_states, csv_value(Map.get(section, "terminal_states")))
+  end
+
+  defp extract_polling_options(section) do
+    %{}
+    |> put_if_present(:interval_ms, integer_value(Map.get(section, "interval_ms")))
+  end
+
+  defp extract_workspace_options(section) do
+    %{}
+    |> put_if_present(:root, binary_value(Map.get(section, "root")))
+  end
+
+  defp extract_agent_options(section) do
+    %{}
+    |> put_if_present(:max_concurrent_agents, integer_value(Map.get(section, "max_concurrent_agents")))
+    |> put_if_present(:max_turns, positive_integer_value(Map.get(section, "max_turns")))
+    |> put_if_present(:max_retry_backoff_ms, positive_integer_value(Map.get(section, "max_retry_backoff_ms")))
+    |> put_if_present(
+      :max_concurrent_agents_by_state,
+      state_limits_value(Map.get(section, "max_concurrent_agents_by_state"))
+    )
+  end
+
+  defp extract_codex_options(section) do
+    %{}
+    |> put_if_present(:command, command_value(Map.get(section, "command")))
+    |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
+    |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
+    |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
+  end
+
+  defp extract_hooks_options(section) do
+    %{}
+    |> put_if_present(:after_create, hook_command_value(Map.get(section, "after_create")))
+    |> put_if_present(:before_run, hook_command_value(Map.get(section, "before_run")))
+    |> put_if_present(:after_run, hook_command_value(Map.get(section, "after_run")))
+    |> put_if_present(:before_remove, hook_command_value(Map.get(section, "before_remove")))
+    |> put_if_present(:timeout_ms, positive_integer_value(Map.get(section, "timeout_ms")))
+  end
+
+  defp extract_observability_options(section) do
+    %{}
+    |> put_if_present(:dashboard_enabled, boolean_value(Map.get(section, "dashboard_enabled")))
+    |> put_if_present(:refresh_ms, integer_value(Map.get(section, "refresh_ms")))
+    |> put_if_present(:render_interval_ms, integer_value(Map.get(section, "render_interval_ms")))
+  end
+
+  defp extract_server_options(section) do
+    %{}
+    |> put_if_present(:port, non_negative_integer_value(Map.get(section, "port")))
+    |> put_if_present(:host, scalar_string_value(Map.get(section, "host")))
+  end
+
+  defp section_map(config, key) do
+    case Map.get(config, key) do
+      section when is_map(section) -> section
+      _ -> %{}
+    end
+  end
+
+  defp put_if_present(map, _key, :omit), do: map
+  defp put_if_present(map, key, value), do: Map.put(map, key, value)
+
+  defp scalar_string_value(nil), do: :omit
+  defp scalar_string_value(value) when is_binary(value), do: String.trim(value)
+  defp scalar_string_value(value) when is_boolean(value), do: to_string(value)
+  defp scalar_string_value(value) when is_integer(value), do: to_string(value)
+  defp scalar_string_value(value) when is_float(value), do: to_string(value)
+  defp scalar_string_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp scalar_string_value(_value), do: :omit
+
+  defp binary_value(value, opts \\ [])
+
+  defp binary_value(value, opts) when is_binary(value) do
+    allow_empty = Keyword.get(opts, :allow_empty, false)
+
+    if value == "" and not allow_empty do
+      :omit
+    else
+      value
+    end
+  end
+
+  defp binary_value(_value, _opts), do: :omit
+
+  defp command_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> :omit
+      trimmed -> trimmed
+    end
+  end
+
+  defp command_value(_value), do: :omit
+
+  defp hook_command_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> :omit
+      _ -> String.trim_trailing(value)
+    end
+  end
+
+  defp hook_command_value(_value), do: :omit
+
+  defp csv_value(values) when is_list(values) do
+    values
+    |> Enum.reduce([], fn value, acc -> maybe_append_csv_value(acc, value) end)
+    |> Enum.reverse()
+    |> case do
+      [] -> :omit
+      normalized_values -> normalized_values
+    end
+  end
+
+  defp csv_value(value) when is_binary(value) do
+    value
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> case do
+      [] -> :omit
+      normalized_values -> normalized_values
+    end
+  end
+
+  defp csv_value(_value), do: :omit
+
+  defp maybe_append_csv_value(acc, value) do
+    case scalar_string_value(value) do
+      :omit ->
+        acc
+
+      normalized ->
+        append_csv_value_if_present(acc, normalized)
+    end
+  end
+
+  defp append_csv_value_if_present(acc, value) do
+    trimmed = String.trim(value)
+
+    if trimmed == "" do
+      acc
+    else
+      [trimmed | acc]
+    end
+  end
+
+  defp integer_value(value) do
+    case parse_integer(value) do
+      {:ok, parsed} -> parsed
+      :error -> :omit
+    end
+  end
+
+  defp positive_integer_value(value) do
+    case parse_positive_integer(value) do
+      {:ok, parsed} -> parsed
+      :error -> :omit
+    end
+  end
+
+  defp non_negative_integer_value(value) do
+    case parse_non_negative_integer(value) do
+      {:ok, parsed} -> parsed
+      :error -> :omit
+    end
+  end
+
+  defp boolean_value(value) when is_boolean(value), do: value
+
+  defp boolean_value(value) when is_binary(value) do
+    case String.downcase(String.trim(value)) do
+      "true" -> true
+      "false" -> false
+      _ -> :omit
+    end
+  end
+
+  defp boolean_value(_value), do: :omit
+
+  defp state_limits_value(value) when is_map(value) do
+    value
+    |> Enum.reduce(%{}, fn {state_name, limit}, acc ->
+      case parse_positive_integer(limit) do
+        {:ok, parsed} ->
+          Map.put(acc, normalize_issue_state(to_string(state_name)), parsed)
+
+        :error ->
+          acc
+      end
+    end)
+  end
+
+  defp state_limits_value(_value), do: :omit
+
+  defp parse_integer(value) when is_integer(value), do: {:ok, value}
+
+  defp parse_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, _} -> {:ok, parsed}
+      :error -> :error
+    end
+  end
+
+  defp parse_integer(_value), do: :error
+
+  defp parse_positive_integer(value) do
+    case parse_integer(value) do
+      {:ok, parsed} when parsed > 0 -> {:ok, parsed}
+      _ -> :error
+    end
+  end
+
+  defp parse_non_negative_integer(value) do
+    case parse_integer(value) do
+      {:ok, parsed} when parsed >= 0 -> {:ok, parsed}
+      _ -> :error
+    end
+  end
+
   defp fetch_value(paths, default) do
     config = workflow_config()
 
     case resolve_config_value(config, paths) do
       :missing -> default
       value -> value
-    end
-  end
-
-  defp fetch_string(paths, default) do
-    case fetch_value(paths, :missing) do
-      :missing -> default
-      nil -> default
-      value when is_binary(value) -> String.trim(value)
-      value -> to_string(value)
-    end
-  end
-
-  defp fetch_path(paths, default) do
-    resolve_path_value(fetch_value(paths, :missing), default)
-  end
-
-  defp fetch_integer(paths, default) do
-    fetch_value(paths, :missing)
-    |> case do
-      :missing ->
-        default
-
-      value when is_integer(value) ->
-        value
-
-      value when is_binary(value) ->
-        case Integer.parse(String.trim(value)) do
-          {parsed, _} -> parsed
-          :error -> default
-        end
-
-      _ ->
-        default
-    end
-  end
-
-  defp fetch_boolean(paths, default) do
-    fetch_value(paths, :missing)
-    |> case do
-      :missing ->
-        default
-
-      value when is_boolean(value) ->
-        value
-
-      value when is_binary(value) ->
-        case String.downcase(String.trim(value)) do
-          "true" -> true
-          "false" -> false
-          _ -> default
-        end
-
-      _ ->
-        default
-    end
-  end
-
-  defp fetch_map(paths, default) do
-    fetch_value(paths, :missing)
-    |> case do
-      :missing -> default
-      value when is_map(value) -> value
-      _ -> default
     end
   end
 
@@ -488,78 +764,6 @@ defmodule SymphonyElixir.Config do
       "excludeSlashTmp" => false
     }
   end
-
-  defp fetch_csv(paths, default) do
-    fetch_value(paths, :missing)
-    |> case do
-      :missing ->
-        default
-
-      values when is_list(values) ->
-        values
-        |> Enum.map(&to_string/1)
-        |> Enum.map(&String.trim/1)
-        |> Enum.reject(&(&1 == ""))
-        |> case do
-          [] -> default
-          parsed_values -> parsed_values
-        end
-
-      value when is_binary(value) ->
-        value
-        |> String.split(",", trim: true)
-        |> Enum.map(&String.trim/1)
-        |> Enum.reject(&(&1 == ""))
-        |> case do
-          [] -> default
-          parsed_values -> parsed_values
-        end
-
-      _ ->
-        default
-    end
-  end
-
-  defp fetch_hook_command(hook_name) when is_binary(hook_name) do
-    case fetch_value([["hooks", hook_name]], :missing) do
-      :missing ->
-        nil
-
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> nil
-          _ -> String.trim_trailing(value)
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp state_limits_by_name(raw_limits) when is_map(raw_limits) do
-    Enum.reduce(raw_limits, %{}, fn {state_name, limit}, acc ->
-      case parse_positive_integer(limit) do
-        {:ok, value} ->
-          Map.put(acc, normalize_issue_state(to_string(state_name)), value)
-
-        :error ->
-          acc
-      end
-    end)
-  end
-
-  defp parse_positive_integer(value) when is_integer(value) and value > 0 do
-    {:ok, value}
-  end
-
-  defp parse_positive_integer(value) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {parsed, _} when parsed > 0 -> {:ok, parsed}
-      _ -> :error
-    end
-  end
-
-  defp parse_positive_integer(_value), do: :error
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name

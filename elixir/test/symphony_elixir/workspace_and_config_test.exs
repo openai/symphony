@@ -616,6 +616,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: "bad")
     assert Config.codex_stall_timeout_ms() == 300_000
 
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: %{todo: true},
+      tracker_terminal_states: %{done: true},
+      poll_interval_ms: %{bad: true},
+      workspace_root: 123,
+      max_retry_backoff_ms: 0,
+      max_concurrent_agents_by_state: %{"Todo" => "1", "Review" => 0, "Done" => "bad"},
+      hook_timeout_ms: 0,
+      observability_enabled: "maybe",
+      observability_refresh_ms: %{bad: true},
+      observability_render_interval_ms: %{bad: true},
+      server_port: -1,
+      server_host: 123
+    )
+
+    assert Config.linear_active_states() == ["Todo", "In Progress"]
+    assert Config.linear_terminal_states() == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    assert Config.poll_interval_ms() == 30_000
+    assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert Config.max_retry_backoff_ms() == 300_000
+    assert Config.max_concurrent_agents_for_state("Todo") == 1
+    assert Config.max_concurrent_agents_for_state("Review") == 10
+    assert Config.hook_timeout_ms() == 60_000
+    assert Config.observability_enabled?()
+    assert Config.observability_refresh_ms() == 1_000
+    assert Config.observability_render_interval_ms() == 16
+    assert Config.server_port() == nil
+    assert Config.server_host() == "123"
+
     write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
 
     assert Config.codex_approval_policy() == %{
