@@ -954,6 +954,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.retry_attempts[issue_id]
 
     assert is_integer(due_at_ms)
+    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+    assert remaining_ms >= 9_500
+    assert remaining_ms <= 10_500
   end
 
   test "status dashboard renders offline marker to terminal" do
