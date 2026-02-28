@@ -1068,6 +1068,45 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert plain =~ ~r/No active agents\r?\n│\s*\r?\n├─ Backoff queue/
   end
 
+  test "status dashboard adds a spacer line before backoff queue when agents are active" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           %{
+             identifier: "MT-777",
+             state: "running",
+             session_id: "thread-1234567890",
+             codex_app_server_pid: "4242",
+             codex_total_tokens: 3_200,
+             runtime_seconds: 75,
+             turn_count: 7,
+             last_codex_event: "turn_completed",
+             last_codex_message: %{
+               event: :notification,
+               message: %{
+                 "method" => "turn/completed",
+                 "params" => %{"turn" => %{"status" => "completed"}}
+               }
+             }
+           }
+         ],
+         retrying: [],
+         codex_totals: %{
+           input_tokens: 90,
+           output_tokens: 12,
+           total_tokens: 102,
+           seconds_running: 75
+         },
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+
+    assert plain =~ ~r/MT-777.*\r?\n│\s*\r?\n├─ Backoff queue/s
+  end
+
   test "status dashboard renders an unstyled closing corner when the retry queue is empty" do
     snapshot_data =
       {:ok,

@@ -338,6 +338,7 @@ defmodule SymphonyElixir.StatusDashboard do
         max_agents = Config.max_concurrent_agents()
         running_event_width = running_event_width(terminal_columns_override)
         running_rows = format_running_rows(running, running_event_width)
+        running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
 
         ([
@@ -364,6 +365,7 @@ defmodule SymphonyElixir.StatusDashboard do
            running_table_separator_row(running_event_width)
          ] ++
            running_rows ++
+           running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
            [closing_border()])

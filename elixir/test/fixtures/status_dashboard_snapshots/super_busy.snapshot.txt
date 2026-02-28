@@ -12,6 +12,7 @@
 │   \e[90m───────────────────────────────────────────────────────────────────────────────────────────────────────────────\e[0m
 │ \e[35m●\e[0m \e[36mMT-101  \e[0m \e[35mrunning       \e[0m \e[33m4242    \e[0m \e[35m13m 5s / 11 \e[0m \e[33m   120,450\e[0m \e[36mthre...567890 \e[0m \e[35mturn completed (completed)             \e[0m
 │ \e[32m●\e[0m \e[36mMT-102  \e[0m \e[32mrunning       \e[0m \e[33m5252    \e[0m \e[35m6m 52s / 4  \e[0m \e[33m    89,200\e[0m \e[36mthre...567890 \e[0m \e[32mmix test --cover                       \e[0m
+│
 \e[1m├─ Backoff queue\e[0m
 │
 │  \e[90mNo queued retries\e[0m
