@@ -675,7 +675,16 @@ defmodule SymphonyElixir.StatusDashboard do
   defp next_in_words(_), do: "n/a"
 
   defp format_retry_error(error) when is_binary(error) do
-    sanitized = error |> String.replace(~r/\s+/, " ") |> String.trim()
+    sanitized =
+      error
+      |> String.replace("\\r\\n", " ")
+      |> String.replace("\\r", " ")
+      |> String.replace("\\n", " ")
+      |> String.replace("\r\n", " ")
+      |> String.replace("\r", " ")
+      |> String.replace("\n", " ")
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
 
     if sanitized == "" do
       ""

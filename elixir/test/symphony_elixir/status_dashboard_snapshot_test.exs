@@ -138,6 +138,34 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("backoff_queue", render_snapshot(snapshot_data, 15.4))
   end
 
+  test "backoff queue row escapes escaped newline sequences" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [
+           retry_entry(%{
+             identifier: "MT-980",
+             attempt: 1,
+             due_in_ms: 1_500,
+             error: "error with \\nnewline"
+           })
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+    backoff_lines = rendered |> String.split("\n") |> Enum.filter(&String.contains?(&1, "MT-980"))
+
+    assert length(backoff_lines) == 1
+
+    [backoff_line] = backoff_lines
+
+    assert backoff_line =~ "error=error with newline"
+    refute backoff_line =~ "\\n"
+  end
+
   test "snapshot fixture: unlimited credits variant" do
     snapshot_data =
       {:ok,
