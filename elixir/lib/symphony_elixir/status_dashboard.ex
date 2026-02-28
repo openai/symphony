@@ -677,9 +677,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_retry_error(error) when is_binary(error) do
     sanitized =
       error
-      |> String.replace("\\\\n", " ")
-      |> String.replace("\\\\r", " ")
-      |> String.replace("\\\\t", " ")
+      |> String.replace(~r/\\+[nrt]/, " ")
       |> String.replace(~r/\s+/, " ")
       |> String.trim()
 

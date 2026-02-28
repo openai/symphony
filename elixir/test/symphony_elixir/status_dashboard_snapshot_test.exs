@@ -155,6 +155,12 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              attempt: 2,
              due_in_ms: 1_000,
              error: "literal\nerror"
+           }),
+           retry_entry(%{
+             identifier: "MT-867-3",
+             attempt: 3,
+             due_in_ms: 1_500,
+             error: ~S"double\\\\nerror"
            })
          ],
          codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
@@ -167,6 +173,8 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     assert output =~ "error=escaped error"
     assert output =~ "MT-867-2"
     assert output =~ "error=literal error"
+    assert output =~ "MT-867-3"
+    assert output =~ "error=double error"
   end
 
   test "snapshot fixture: unlimited credits variant" do
