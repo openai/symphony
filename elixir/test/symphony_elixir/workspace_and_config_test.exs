@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.WorkspaceAndConfigTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
@@ -345,6 +346,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     merged = Client.merge_issue_pages_for_test([issue_page_1, issue_page_2])
 
     assert Enum.map(merged, & &1.identifier) == ["MT-1", "MT-2", "MT-3"]
+  end
+
+  test "linear client logs response bodies for non-200 graphql responses" do
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:linear_api_status, 400}} =
+                 Client.graphql(
+                   "query Viewer { viewer { id } }",
+                   %{},
+                   request_fun: fn _payload, _headers ->
+                     {:ok,
+                      %{
+                        status: 400,
+                        body: %{
+                          "errors" => [
+                            %{
+                              "message" => "Variable \"$ids\" got invalid value",
+                              "extensions" => %{"code" => "BAD_USER_INPUT"}
+                            }
+                          ]
+                        }
+                      }}
+                   end
+                 )
+      end)
+
+    assert log =~ "Linear GraphQL request failed status=400"
+    assert log =~ ~s(body=%{"errors" => [%{"extensions" => %{"code" => "BAD_USER_INPUT"})
+    assert log =~ "Variable \\\"$ids\\\" got invalid value"
   end
 
   test "orchestrator sorts dispatch by priority then oldest created_at" do

@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Linear.Client do
   alias SymphonyElixir.{Config, Linear.Issue}
 
   @issue_page_size 50
+  @max_error_body_log_bytes 1_000
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -168,7 +169,11 @@ defmodule SymphonyElixir.Linear.Client do
       {:ok, body}
     else
       {:ok, response} ->
-        Logger.error("Linear GraphQL request failed status=#{response.status}")
+        Logger.error(
+          "Linear GraphQL request failed status=#{response.status}" <>
+            linear_error_context(payload, response)
+        )
+
         {:error, {:linear_api_status, response.status}}
 
       {:error, reason} ->
@@ -281,6 +286,43 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp maybe_put_operation_name(payload, _operation_name), do: payload
+
+  defp linear_error_context(payload, response) when is_map(payload) do
+    operation_name =
+      case Map.get(payload, "operationName") do
+        name when is_binary(name) and name != "" -> " operation=#{name}"
+        _ -> ""
+      end
+
+    body =
+      response
+      |> Map.get(:body)
+      |> summarize_error_body()
+
+    operation_name <> " body=" <> body
+  end
+
+  defp summarize_error_body(body) when is_binary(body) do
+    body
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> truncate_error_body()
+    |> inspect()
+  end
+
+  defp summarize_error_body(body) do
+    body
+    |> inspect(limit: 20, printable_limit: @max_error_body_log_bytes)
+    |> truncate_error_body()
+  end
+
+  defp truncate_error_body(body) when is_binary(body) do
+    if byte_size(body) > @max_error_body_log_bytes do
+      binary_part(body, 0, @max_error_body_log_bytes) <> "...<truncated>"
+    else
+      body
+    end
+  end
 
   defp graphql_headers do
     case Config.linear_api_token() do
