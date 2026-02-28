@@ -14,4 +14,4 @@
 \e[1m├─ Backoff queue\e[0m
 │
 │  \e[90mNo queued retries\e[0m
-\e[90m╰─\e[0m
+╰─

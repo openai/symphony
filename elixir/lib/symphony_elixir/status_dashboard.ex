@@ -128,7 +128,7 @@ defmodule SymphonyElixir.StatusDashboard do
       [
         colorize("╭─ SYMPHONY STATUS", @ansi_bold),
         colorize("│ app_status=offline", @ansi_red),
-        colorize("╰─", @ansi_gray)
+        closing_border()
       ]
       |> Enum.join("\n")
 
@@ -366,7 +366,7 @@ defmodule SymphonyElixir.StatusDashboard do
            running_rows ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
-           [colorize("╰─", @ansi_gray)])
+           [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
 
@@ -377,7 +377,7 @@ defmodule SymphonyElixir.StatusDashboard do
           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
           format_project_link_lines(),
           format_project_refresh_line(nil),
-          colorize("╰─", @ansi_gray)
+          closing_border()
         ]
         |> List.flatten()
         |> Enum.join("\n")
@@ -1044,6 +1044,8 @@ defmodule SymphonyElixir.StatusDashboard do
   defp normalize_status_lines(content) do
     content
   end
+
+  defp closing_border, do: "╰─"
 
   defp colorize(value, code) do
     "#{code}#{value}#{@ansi_reset}"

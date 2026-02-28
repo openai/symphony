@@ -1065,6 +1065,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert plain =~ ~r/No active agents\r?\n│\s*\r?\n├─ Backoff queue/
   end
 
+  test "status dashboard renders an unstyled closing corner when the retry queue is empty" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+
+    assert rendered |> String.split("\n") |> List.last() == "╰─"
+  end
+
   test "status dashboard coalesces rapid updates to one render per interval" do
     dashboard_name = Module.concat(__MODULE__, :RenderDashboard)
     parent = self()
