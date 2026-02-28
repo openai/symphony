@@ -128,7 +128,7 @@ defmodule SymphonyElixir.StatusDashboard do
       [
         colorize("╭─ SYMPHONY STATUS", @ansi_bold),
         colorize("│ app_status=offline", @ansi_red),
-        colorize("╰─", @ansi_gray)
+        closing_border()
       ]
       |> Enum.join("\n")
 
@@ -368,7 +368,7 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
-           [colorize("╰─", @ansi_gray)])
+           [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
 
@@ -379,7 +379,7 @@ defmodule SymphonyElixir.StatusDashboard do
           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
           format_project_link_lines(),
           format_project_refresh_line(nil),
-          colorize("╰─", @ansi_gray)
+          closing_border()
         ]
         |> List.flatten()
         |> Enum.join("\n")
@@ -1047,6 +1047,8 @@ defmodule SymphonyElixir.StatusDashboard do
     content
   end
 
+  defp closing_border, do: "╰─"
+
   defp colorize(value, code) do
     "#{code}#{value}#{@ansi_reset}"
   end
@@ -1106,6 +1108,18 @@ defmodule SymphonyElixir.StatusDashboard do
       end
 
     if is_binary(decision), do: "#{base}: #{decision}", else: base
+  end
+
+  defp humanize_codex_event(:tool_input_auto_answered, message, payload) do
+    answer = map_value(message, ["answer", :answer])
+
+    base =
+      case humanize_codex_method("item/tool/requestUserInput", payload) do
+        nil -> "tool input auto-answered"
+        text -> "#{text} (auto-answered)"
+      end
+
+    if is_binary(answer), do: "#{base}: #{inline_text(answer)}", else: base
   end
 
   defp humanize_codex_event(:tool_call_completed, _message, payload),

@@ -17,4 +17,4 @@
 │  \e[33m↻\e[0m \e[31mMT-450\e[0m \e[33mattempt=4\e[0m\e[2m in \e[0m\e[36m1.250s\e[0m \e[2merror=rate limit exhausted\e[0m
 │  \e[33m↻\e[0m \e[31mMT-451\e[0m \e[33mattempt=2\e[0m\e[2m in \e[0m\e[36m3.900s\e[0m \e[2merror=retrying after API timeout with jitter\e[0m
 │  \e[33m↻\e[0m \e[31mMT-452\e[0m \e[33mattempt=6\e[0m\e[2m in \e[0m\e[36m8.100s\e[0m \e[2merror=worker crashed restarting cleanly\e[0m
-\e[90m╰─\e[0m
+╰─

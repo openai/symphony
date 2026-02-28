@@ -954,6 +954,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.retry_attempts[issue_id]
 
     assert is_integer(due_at_ms)
+    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+    assert remaining_ms >= 9_500
+    assert remaining_ms <= 10_500
   end
 
   test "status dashboard renders offline marker to terminal" do
@@ -1102,6 +1105,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ ~r/MT-777.*\r?\n│\s*\r?\n├─ Backoff queue/s
+  end
+
+  test "status dashboard renders an unstyled closing corner when the retry queue is empty" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+
+    assert rendered |> String.split("\n") |> List.last() == "╰─"
   end
 
   test "status dashboard coalesces rapid updates to one render per interval" do
@@ -1432,6 +1450,23 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     humanized = StatusDashboard.humanize_codex_message(message)
     assert humanized =~ "command approval requested"
     assert humanized =~ "auto-approved"
+  end
+
+  test "status dashboard formats auto-answered tool input updates from codex" do
+    message = %{
+      event: :tool_input_auto_answered,
+      message: %{
+        payload: %{
+          "method" => "item/tool/requestUserInput",
+          "params" => %{"question" => "Continue?"}
+        },
+        answer: "This is a non-interactive session. Operator input is unavailable."
+      }
+    }
+
+    humanized = StatusDashboard.humanize_codex_message(message)
+    assert humanized =~ "tool requires user input"
+    assert humanized =~ "auto-answered"
   end
 
   test "status dashboard enriches wrapper reasoning and message streaming events with payload context" do

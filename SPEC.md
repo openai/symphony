@@ -417,10 +417,24 @@ Fields:
 
 Fields:
 
+For Codex-owned config values such as `approval_policy`, `thread_sandbox`, and
+`turn_sandbox_policy`, supported values are defined by the targeted Codex app-server version.
+Implementors should treat them as pass-through Codex config values rather than relying on a
+hand-maintained enum in this spec. To inspect the installed Codex schema, run
+`codex app-server generate-json-schema --out <dir>` and inspect the relevant definitions referenced
+by `v2/ThreadStartParams.json` and `v2/TurnStartParams.json`. Implementations may validate these
+fields locally if they want stricter startup checks.
+
 - `command` (string shell command)
   - Default: `codex app-server`
   - The runtime launches this command via `bash -lc` in the workspace directory.
   - The launched process must speak a compatible app-server protocol over stdio.
+- `approval_policy` (Codex `AskForApproval` value)
+  - Default: implementation-defined.
+- `thread_sandbox` (Codex `SandboxMode` value)
+  - Default: implementation-defined.
+- `turn_sandbox_policy` (Codex `SandboxPolicy` value)
+  - Default: implementation-defined.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -555,6 +569,9 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
+- `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
+- `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
+- `codex.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
@@ -598,8 +615,9 @@ Important nuance:
 - The first turn should use the full rendered task prompt.
 - Continuation turns should send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
-- Once the worker exits normally, the orchestrator still schedules a short continuation retry so it
-  can re-check whether the issue remains active and needs another worker session.
+- Once the worker exits normally, the orchestrator still schedules a short continuation retry
+  (about 1 second) so it can re-check whether the issue remains active and needs another worker
+  session.
 
 ### 7.2 Run Attempt Lifecycle
 
@@ -720,8 +738,9 @@ Retry entry creation:
 
 Backoff formula:
 
-- `delay = min(1000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`
-- Power is capped by the configured max retry backoff (default `300000` / 5m)
+- Normal continuation retries after a clean worker exit use a short fixed delay of `1000` ms.
+- Failure-driven retries use `delay = min(10000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`.
+- Power is capped by the configured max retry backoff (default `300000` / 5m).
 
 Retry handling behavior:
 
@@ -1826,7 +1845,10 @@ on_worker_exit(issue_id, reason, state):
 
   if reason == normal:
     state.completed.add(issue_id)  # bookkeeping only
-    state = schedule_retry(state, issue_id, 1, {identifier: running_entry.identifier})
+    state = schedule_retry(state, issue_id, 1, {
+      identifier: running_entry.identifier,
+      delay_type: continuation
+    })
   else:
     state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
       identifier: running_entry.identifier,
@@ -1938,8 +1960,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Non-active state stops running agent without workspace cleanup
 - Terminal state stops running agent and cleans workspace
 - Reconciliation with no running issues is a no-op
-- Normal worker exit schedules continuation retry (attempt 1)
-- Abnormal worker exit increments retries with backoff
+- Normal worker exit schedules a short continuation retry (attempt 1)
+- Abnormal worker exit increments retries with 10s-based exponential backoff
 - Retry backoff cap uses configured `agent.max_retry_backoff_ms`
 - Retry queue entries include attempt, due time, identifier, and error
 - Stall detection kills stalled sessions and schedules retry

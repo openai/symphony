@@ -10,7 +10,8 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
-  @retry_base_ms 1_000
+  @continuation_retry_delay_ms 1_000
+  @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -107,7 +108,10 @@ defmodule SymphonyElixir.Orchestrator do
 
               state
               |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{identifier: running_entry.identifier})
+              |> schedule_issue_retry(issue_id, 1, %{
+                identifier: running_entry.identifier,
+                delay_type: :continuation
+              })
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -194,6 +198,18 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, :missing_codex_command} ->
         Logger.error("Codex command missing in WORKFLOW.md")
+        state
+
+      {:error, {:invalid_codex_approval_policy, value}} ->
+        Logger.error("Invalid codex.approval_policy in WORKFLOW.md: #{inspect(value)}")
+        state
+
+      {:error, {:invalid_codex_thread_sandbox, value}} ->
+        Logger.error("Invalid codex.thread_sandbox in WORKFLOW.md: #{inspect(value)}")
+        state
+
+      {:error, {:invalid_codex_turn_sandbox_policy, reason}} ->
+        Logger.error("Invalid codex.turn_sandbox_policy in WORKFLOW.md: #{inspect(reason)}")
         state
 
       {:error, {:missing_workflow_file, path, reason}} ->
@@ -597,7 +613,7 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
-    delay_ms = retry_delay(next_attempt)
+    delay_ms = retry_delay(next_attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
@@ -737,9 +753,17 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
-  defp retry_delay(attempt) do
+  defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    if metadata[:delay_type] == :continuation and attempt == 1 do
+      @continuation_retry_delay_ms
+    else
+      failure_retry_delay(attempt)
+    end
+  end
+
+  defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
-    min(@retry_base_ms * (1 <<< max_delay_power), Config.max_retry_backoff_ms())
+    min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.max_retry_backoff_ms())
   end
 
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt

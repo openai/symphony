@@ -544,6 +544,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: nil,
       max_concurrent_agents: nil,
+      codex_approval_policy: nil,
+      codex_thread_sandbox: nil,
+      codex_turn_sandbox_policy: nil,
       codex_turn_timeout_ms: nil,
       codex_read_timeout_ms: nil,
       codex_stall_timeout_ms: nil,
@@ -558,12 +561,45 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.max_concurrent_agents() == 10
     assert Config.codex_command() == "codex app-server"
 
+    assert Config.codex_approval_policy() == %{
+             "reject" => %{
+               "sandbox_approval" => true,
+               "rules" => true,
+               "mcp_elicitations" => true
+             }
+           }
+
+    assert Config.codex_thread_sandbox() == "workspace-write"
+
+    assert Config.codex_turn_sandbox_policy() == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
+           }
+
     assert Config.codex_turn_timeout_ms() == 3_600_000
     assert Config.codex_read_timeout_ms() == 5_000
     assert Config.codex_stall_timeout_ms() == 300_000
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
     assert Config.codex_command() == "codex app-server --model gpt-5.3-codex"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_approval_policy: "on-request",
+      codex_thread_sandbox: "workspace-write",
+      codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["/tmp/workspace", "/tmp/cache"]}
+    )
+
+    assert Config.codex_approval_policy() == "on-request"
+    assert Config.codex_thread_sandbox() == "workspace-write"
+
+    assert Config.codex_turn_sandbox_policy() == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => ["/tmp/workspace", "/tmp/cache"]
+           }
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
     assert Config.linear_active_states() == ["Todo", "In Progress"]
@@ -579,6 +615,55 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: "bad")
     assert Config.codex_stall_timeout_ms() == 300_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
+
+    assert Config.codex_approval_policy() == %{
+             "reject" => %{
+               "sandbox_approval" => true,
+               "rules" => true,
+               "mcp_elicitations" => true
+             }
+           }
+
+    assert {:error, {:invalid_codex_approval_policy, ""}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "")
+    assert Config.codex_thread_sandbox() == "workspace-write"
+    assert {:error, {:invalid_codex_thread_sandbox, ""}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_turn_sandbox_policy: "bad")
+
+    assert Config.codex_turn_sandbox_policy() == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
+           }
+
+    assert {:error, {:invalid_codex_turn_sandbox_policy, {:unsupported_value, "bad"}}} =
+             Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_approval_policy: "future-policy",
+      codex_thread_sandbox: "future-sandbox",
+      codex_turn_sandbox_policy: %{
+        type: "futureSandbox",
+        nested: %{flag: true}
+      }
+    )
+
+    assert Config.codex_approval_policy() == "future-policy"
+    assert Config.codex_thread_sandbox() == "future-sandbox"
+
+    assert Config.codex_turn_sandbox_policy() == %{
+             "type" => "futureSandbox",
+             "nested" => %{"flag" => true}
+           }
+
+    assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
     assert Config.codex_command() == "codex app-server"
