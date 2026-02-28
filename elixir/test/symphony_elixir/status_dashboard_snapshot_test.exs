@@ -138,6 +138,37 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("backoff_queue", render_snapshot(snapshot_data, 15.4))
   end
 
+  test "backoff queue normalizes escaped and literal newlines in retry errors" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [
+           retry_entry(%{
+             identifier: "MT-867-1",
+             attempt: 1,
+             due_in_ms: 500,
+             error: "escaped\\\\nerror"
+           }),
+           retry_entry(%{
+             identifier: "MT-867-2",
+             attempt: 2,
+             due_in_ms: 1_000,
+             error: "literal\nerror"
+           })
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    output = render_snapshot(snapshot_data, 0.0)
+
+    assert output =~ "MT-867-1"
+    assert output =~ "error=escaped error"
+    assert output =~ "MT-867-2"
+    assert output =~ "error=literal error"
+  end
+
   test "snapshot fixture: unlimited credits variant" do
     snapshot_data =
       {:ok,
