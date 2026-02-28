@@ -274,6 +274,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
+          {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
+  def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
+      when is_function(issue_fetcher, 1) do
+    revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set())
+  end
+
+  @doc false
   @spec sort_issues_for_dispatch_for_test([Issue.t()]) :: [Issue.t()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
     sort_issues_for_dispatch(issues)
@@ -551,6 +559,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil) do
+    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
+      {:ok, %Issue{} = refreshed_issue} ->
+        do_dispatch_issue(state, refreshed_issue, attempt)
+
+      {:skip, :missing} ->
+        Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
+        state
+
+      {:skip, %Issue{} = refreshed_issue} ->
+        Logger.info("Skipping stale dispatch after issue refresh: #{issue_context(refreshed_issue)} state=#{inspect(refreshed_issue.state)} blocked_by=#{length(refreshed_issue.blocked_by)}")
+
+        state
+
+      {:error, reason} ->
+        Logger.warning("Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp do_dispatch_issue(%State{} = state, issue, attempt) do
     recipient = self()
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
@@ -600,6 +628,26 @@ defmodule SymphonyElixir.Orchestrator do
         })
     end
   end
+
+  defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
+       when is_binary(issue_id) and is_function(issue_fetcher, 1) do
+    case issue_fetcher.([issue_id]) do
+      {:ok, [%Issue{} = refreshed_issue | _]} ->
+        if retry_candidate_issue?(refreshed_issue, terminal_states) do
+          {:ok, refreshed_issue}
+        else
+          {:skip, refreshed_issue}
+        end
+
+      {:ok, []} ->
+        {:skip, :missing}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id) do
     %{
