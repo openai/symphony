@@ -1174,6 +1174,7 @@ defmodule SymphonyElixir.StatusDashboard do
             payload
             |> inspect(pretty: true, limit: 30)
             |> String.replace("\n", " ")
+            |> sanitize_ansi_and_control_bytes()
             |> String.trim()
         end
     end
@@ -1182,6 +1183,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_codex_payload(payload) when is_binary(payload) do
     payload
     |> String.replace("\n", " ")
+    |> sanitize_ansi_and_control_bytes()
     |> String.trim()
   end
 
@@ -1189,7 +1191,15 @@ defmodule SymphonyElixir.StatusDashboard do
     payload
     |> inspect(pretty: true, limit: 20)
     |> String.replace("\n", " ")
+    |> sanitize_ansi_and_control_bytes()
     |> String.trim()
+  end
+
+  defp sanitize_ansi_and_control_bytes(value) when is_binary(value) do
+    value
+    |> String.replace(~r/\x1B\[[0-9;]*[A-Za-z]/, "")
+    |> String.replace(~r/\x1B./, "")
+    |> String.replace(~r/[\x00-\x1F\x7F]/, "")
   end
 
   defp humanize_codex_method("thread/started", payload) do
