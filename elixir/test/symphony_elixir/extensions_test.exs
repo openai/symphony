@@ -337,6 +337,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert status == 200
     assert Map.fetch!(headers, "content-type") =~ "text/html"
     assert body =~ "Symphony Dashboard"
+    assert body =~ "Open pomodoro app"
+
+    {status, headers, body} = http_request(port, "GET", "/pomodoro")
+    assert status == 200
+    assert Map.fetch!(headers, "content-type") =~ "text/html"
+    assert body =~ "Pomodoro Timer"
+    assert body =~ "Focus duration"
+    assert body =~ "Start"
+    assert body =~ "Break duration"
 
     {status, headers, body} = http_request(port, "GET", "/api/v1/state")
     assert status == 200
@@ -404,6 +413,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert %{"error" => %{"code" => "method_not_allowed"}} = Jason.decode!(body)
 
     {status, _headers, body} = http_request(port, "POST", "/", "")
+    assert status == 405
+    assert %{"error" => %{"code" => "method_not_allowed"}} = Jason.decode!(body)
+
+    {status, _headers, body} = http_request(port, "POST", "/pomodoro", "")
     assert status == 405
     assert %{"error" => %{"code" => "method_not_allowed"}} = Jason.decode!(body)
 
