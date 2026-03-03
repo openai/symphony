@@ -388,7 +388,6 @@ defmodule SymphonyElixir.Linear.Client do
   defp assigned_to_worker?(_assignee, _assignee_filter), do: false
 
   defp assignee_id(%{} = assignee), do: normalize_assignee_match_value(assignee["id"])
-  defp assignee_id(_assignee), do: nil
 
   defp routing_assignee_filter do
     case Config.linear_assignee() do
