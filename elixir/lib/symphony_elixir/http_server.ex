@@ -411,6 +411,7 @@ defmodule SymphonyElixir.HttpServer do
     payload = state_payload(orchestrator, snapshot_timeout_ms)
     title = "Symphony Dashboard"
     body = Jason.encode!(payload, pretty: true)
+    escaped_body = escape_html(body)
 
     """
     <!doctype html>
@@ -426,10 +427,19 @@ defmodule SymphonyElixir.HttpServer do
       </head>
       <body>
         <h1>#{title}</h1>
-        <pre>#{body}</pre>
+        <pre>#{escaped_body}</pre>
       </body>
     </html>
     """
+  end
+
+  defp escape_html(value) when is_binary(value) do
+    value
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace("\"", "&quot;")
+    |> String.replace("'", "&#39;")
   end
 
   defp parse_host({_, _, _, _} = ip), do: {:ok, ip}

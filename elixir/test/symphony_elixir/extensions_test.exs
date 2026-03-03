@@ -375,6 +375,54 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert %{"coalesced" => false, "operations" => ["poll", "reconcile"], "queued" => true} = Jason.decode!(body)
   end
 
+  test "http server escapes html-sensitive characters in rendered dashboard payload" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    orchestrator_name = Module.concat(__MODULE__, :EscapingHttpOrchestrator)
+    server_name = Module.concat(__MODULE__, :EscapingHttpServer)
+    {:ok, orchestrator_pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    {:ok, server_pid} =
+      HttpServer.start_link(
+        name: server_name,
+        host: "127.0.0.1",
+        port: 0,
+        orchestrator: orchestrator_name,
+        snapshot_timeout_ms: 1_000
+      )
+
+    on_exit(fn ->
+      if Process.alive?(server_pid), do: Process.exit(server_pid, :normal)
+      if Process.alive?(orchestrator_pid), do: Process.exit(orchestrator_pid, :normal)
+    end)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: "MT-897",
+      issue: %Issue{id: "issue-html", identifier: "MT-897", state: "In Progress"},
+      session_id: "thread-html",
+      turn_count: 7,
+      codex_app_server_pid: nil,
+      last_codex_message: "<script>window.xssed=1</script>",
+      last_codex_timestamp: nil,
+      last_codex_event: :notification,
+      codex_input_tokens: 4,
+      codex_output_tokens: 8,
+      codex_total_tokens: 12,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      %{state | running: %{"issue-html" => running_entry}, retry_attempts: %{}}
+    end)
+
+    port = wait_for_bound_port(server_name)
+    {status, _headers, body} = http_request(port, "GET", "/")
+    assert status == 200
+    refute String.contains?(body, "<script>window.xssed=1</script>")
+    assert body =~ "&lt;script&gt;window.xssed=1&lt;/script&gt;"
+  end
+
   test "http server returns method, parse, timeout, and unavailable errors" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     server_name = Module.concat(__MODULE__, :ErrorHttpServer)
