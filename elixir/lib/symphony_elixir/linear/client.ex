@@ -406,25 +406,29 @@ defmodule SymphonyElixir.Linear.Client do
         {:ok, nil}
 
       "me" ->
-        case graphql(@viewer_query, %{}) do
-          {:ok, %{"data" => %{"viewer" => viewer}}} when is_map(viewer) ->
-            case assignee_id(viewer) do
-              nil ->
-                {:error, :missing_linear_viewer_identity}
-
-              viewer_id ->
-                {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
-            end
-
-          {:ok, _body} ->
-            {:error, :missing_linear_viewer_identity}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+        resolve_viewer_assignee_filter()
 
       normalized ->
         {:ok, %{configured_assignee: assignee, match_values: MapSet.new([normalized])}}
+    end
+  end
+
+  defp resolve_viewer_assignee_filter do
+    case graphql(@viewer_query, %{}) do
+      {:ok, %{"data" => %{"viewer" => viewer}}} when is_map(viewer) ->
+        case assignee_id(viewer) do
+          nil ->
+            {:error, :missing_linear_viewer_identity}
+
+          viewer_id ->
+            {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
+        end
+
+      {:ok, _body} ->
+        {:error, :missing_linear_viewer_identity}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
