@@ -81,12 +81,13 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       exit 0
       """,
       fn log_path ->
-        output =
-          capture_io(fn ->
+        {output, error_output} =
+          capture_task_output(fn ->
             BeforeRemove.run([])
           end)
 
         assert output =~ "Closed PR #101 for branch feature/workpad"
+        assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
 
         log = File.read!(log_path)
 
@@ -103,7 +104,13 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     with_fake_gh(fn log_path ->
       File.write!(log_path, "")
 
-      BeforeRemove.run(["--branch", "feature/workpad"])
+      {output, error_output} =
+        capture_task_output(fn ->
+          BeforeRemove.run(["--branch", "feature/workpad"])
+        end)
+
+      assert output =~ "Closed PR #101 for branch feature/workpad"
+      assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
 
       log = File.read!(log_path)
 
@@ -112,12 +119,13 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       assert log =~ "pr close 101 --repo openai/symphony"
       assert log =~ "pr close 102 --repo openai/symphony"
 
-      error_output =
-        capture_io(:stderr, fn ->
+      {second_output, error_output} =
+        capture_task_output(fn ->
           Mix.Task.reenable("workspace.before_remove")
           BeforeRemove.run(["--branch", "feature/workpad"])
         end)
 
+      assert second_output =~ "Closed PR #101 for branch feature/workpad"
       assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
     end)
   end
@@ -354,5 +362,29 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.cd!(original_cwd)
       File.rm_rf!(root)
     end
+  end
+
+  defp capture_task_output(fun) do
+    parent = self()
+    ref = make_ref()
+
+    error_output =
+      capture_io(:stderr, fn ->
+        output =
+          capture_io(fn ->
+            fun.()
+          end)
+
+        send(parent, {ref, output})
+      end)
+
+    output =
+      receive do
+        {^ref, output} -> output
+      after
+        1_000 -> flunk("Timed out waiting for captured task output")
+      end
+
+    {output, error_output}
   end
 end

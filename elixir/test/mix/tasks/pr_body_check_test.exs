@@ -278,9 +278,11 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       write_template!(@template)
       File.write!("body.md", "#### Context\nContext text.")
 
-      assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-        Check.run(["lint", "--file", "body.md"])
-      end
+      capture_io(:stderr, fn ->
+        assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+          Check.run(["lint", "--file", "body.md"])
+        end
+      end)
     end)
   end
 
