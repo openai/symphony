@@ -125,8 +125,9 @@ codex:
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML, startup and scheduling are halted until fixed.
-- `server.port` or CLI `--port` enables the optional HTTP dashboard and JSON API at `/`,
-  `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- `server.port` or CLI `--port` enables the optional HTTP dashboard plus pomodoro demo at `/`
+  and `/pomodoro`, alongside the JSON API at `/api/v1/state`, `/api/v1/<issue_identifier>`,
+  and `/api/v1/refresh`.
 
 ## Project Layout
 

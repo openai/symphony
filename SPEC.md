@@ -1359,8 +1359,11 @@ If implemented:
 
 - The HTTP server is an extension and is not required for conformance.
 - The implementation may serve server-rendered HTML or a client-side application for the dashboard.
-- The dashboard/API must be observability/control surfaces only and must not become required for
-  orchestrator correctness.
+- The dashboard and `/api/v1/*` contract must remain observability/control surfaces only and must
+  not become required for orchestrator correctness.
+- Implementations may expose additional explicitly optional routes (for example a self-contained
+  local demo at `/pomodoro`) as long as those routes stay separate from the dashboard/API contract
+  and are never required for orchestration.
 
 Enablement (extension):
 
@@ -1383,6 +1386,8 @@ Enablement (extension):
   retry delays, token consumption, runtime totals, recent events, and health/error indicators).
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
+- Additional implementation-specific HTML pages may exist at other routes, but they are optional
+  and outside the conformance surface defined in this section.
 
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
