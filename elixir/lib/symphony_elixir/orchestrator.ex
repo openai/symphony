@@ -305,6 +305,11 @@ defmodule SymphonyElixir.Orchestrator do
 
         terminate_running_issue(state, issue.id, true)
 
+      !issue_routable_to_worker?(issue) ->
+        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_email || issue.assignee_id || issue.assignee_name || issue.assignee_display_name)}; stopping active agent")
+
+        terminate_running_issue(state, issue.id, false)
+
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
 
@@ -467,9 +472,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed} = state,
-         active_states,
-         terminal_states
+       %State{running: running, claimed: claimed} = state,
+       active_states,
+       terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
@@ -502,16 +507,28 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp candidate_issue?(
-         %Issue{id: id, identifier: identifier, title: title, state: state_name},
+         %Issue{
+           id: id,
+           identifier: identifier,
+           title: title,
+           state: state_name
+         } = issue,
          active_states,
          terminal_states
        )
        when is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) do
-    active_issue_state?(state_name, active_states) and
+    issue_routable_to_worker?(issue) and
+      active_issue_state?(state_name, active_states) and
       !terminal_issue_state?(state_name, terminal_states)
   end
 
   defp candidate_issue?(_issue, _active_states, _terminal_states), do: false
+
+  defp issue_routable_to_worker?(%Issue{assigned_to_worker: assigned_to_worker})
+       when is_boolean(assigned_to_worker),
+       do: assigned_to_worker
+
+  defp issue_routable_to_worker?(_issue), do: true
 
   defp todo_issue_blocked_by_non_terminal?(
          %Issue{state: issue_state, blocked_by: blockers},

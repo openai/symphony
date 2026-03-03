@@ -259,11 +259,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear issue helpers" do
     issue = %Issue{
       id: "abc",
-      labels: ["frontend", "infra"]
+      labels: ["frontend", "infra"],
+      assigned_to_worker: false
     }
 
     assert Issue.label_names(issue) == ["frontend", "infra"]
     assert issue.labels == ["frontend", "infra"]
+    refute issue.assigned_to_worker
   end
 
   test "linear client normalizes blockers from inverse relations" do
@@ -276,6 +278,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "state" => %{"name" => "Todo"},
       "branchName" => "mt-1",
       "url" => "https://example.org/issues/MT-1",
+      "assignee" => %{
+        "id" => "user-1",
+        "email" => "dev@example.com",
+        "name" => "Dev User",
+        "displayName" => "Dev"
+      },
       "labels" => %{"nodes" => [%{"name" => "Backend"}]},
       "inverseRelations" => %{
         "nodes" => [
@@ -301,12 +309,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "updatedAt" => "2026-01-02T00:00:00Z"
     }
 
-    issue = Client.normalize_issue_for_test(raw_issue)
+    issue = Client.normalize_issue_for_test(raw_issue, "dev@example.com")
 
     assert issue.blocked_by == [%{id: "issue-2", identifier: "MT-2", state: "In Progress"}]
     assert issue.labels == ["backend"]
     assert issue.priority == 2
     assert issue.state == "Todo"
+    assert issue.assignee_email == "dev@example.com"
+    assert issue.assignee_display_name == "Dev"
+    assert issue.assigned_to_worker
+  end
+
+  test "linear client marks explicitly unassigned issues as not routed to worker" do
+    raw_issue = %{
+      "id" => "issue-99",
+      "identifier" => "MT-99",
+      "title" => "Someone else's task",
+      "state" => %{"name" => "Todo"},
+      "assignee" => %{
+        "id" => "user-2",
+        "email" => "other@example.com",
+        "name" => "Other Dev",
+        "displayName" => "Other"
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, "dev@example.com")
+
+    refute issue.assigned_to_worker
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -377,6 +407,28 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       title: "Blocked work",
       state: "Todo",
       blocked_by: [%{id: "blocker-1", identifier: "MT-1002", state: "In Progress"}]
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "issue assigned to another worker is not dispatch-eligible" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_assignee: "dev@example.com")
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "assigned-away-1",
+      identifier: "MT-1007",
+      title: "Owned elsewhere",
+      state: "Todo",
+      assigned_to_worker: false
     }
 
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)

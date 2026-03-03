@@ -12,8 +12,13 @@ defmodule SymphonyElixir.Linear.Issue do
     :state,
     :branch_name,
     :url,
+    :assignee_id,
+    :assignee_email,
+    :assignee_name,
+    :assignee_display_name,
     blocked_by: [],
     labels: [],
+    assigned_to_worker: true,
     created_at: nil,
     updated_at: nil
   ]
@@ -27,7 +32,12 @@ defmodule SymphonyElixir.Linear.Issue do
           state: String.t() | nil,
           branch_name: String.t() | nil,
           url: String.t() | nil,
+          assignee_id: String.t() | nil,
+          assignee_email: String.t() | nil,
+          assignee_name: String.t() | nil,
+          assignee_display_name: String.t() | nil,
           labels: [String.t()],
+          assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }

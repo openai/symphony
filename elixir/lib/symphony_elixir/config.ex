@@ -53,6 +53,7 @@ defmodule SymphonyElixir.Config do
                                  endpoint: [type: :string, default: @default_linear_endpoint],
                                  api_key: [type: {:or, [:string, nil]}, default: nil],
                                  project_slug: [type: {:or, [:string, nil]}, default: nil],
+                                 assignee: [type: {:or, [:string, nil]}, default: nil],
                                  active_states: [
                                    type: {:list, :string},
                                    default: @default_active_states
@@ -198,6 +199,14 @@ defmodule SymphonyElixir.Config do
   @spec linear_project_slug() :: String.t() | nil
   def linear_project_slug do
     get_in(validated_workflow_options(), [:tracker, :project_slug])
+  end
+
+  @spec linear_assignee() :: String.t() | nil
+  def linear_assignee do
+    validated_workflow_options()
+    |> get_in([:tracker, :assignee])
+    |> resolve_env_value(System.get_env("LINEAR_ASSIGNEE"))
+    |> normalize_secret_value()
   end
 
   @spec linear_active_states() :: [String.t()]

@@ -14,6 +14,7 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.poll_interval_ms() == 30_000
     assert Config.linear_active_states() == ["Todo", "In Progress"]
     assert Config.linear_terminal_states() == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    assert Config.linear_assignee() == nil
     assert Config.agent_max_turns() == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -113,6 +114,22 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.linear_api_token() == env_api_key
     assert Config.linear_project_slug() == "project"
     assert :ok = Config.validate!()
+  end
+
+  test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
+    previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
+    env_assignee = "dev@example.com"
+
+    on_exit(fn -> restore_env("LINEAR_ASSIGNEE", previous_linear_assignee) end)
+    System.put_env("LINEAR_ASSIGNEE", env_assignee)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_assignee: nil,
+      tracker_project_slug: "project",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.linear_assignee() == env_assignee
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -353,6 +370,53 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.has_key?(updated_state.running, issue_id)
     assert MapSet.member?(updated_state.claimed, issue_id)
     assert updated_entry.issue.state == "In Progress"
+  end
+
+  test "reconcile stops running issue when it is reassigned away from this worker" do
+    issue_id = "issue-reassigned"
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "MT-561",
+          issue: %Issue{
+            id: issue_id,
+            identifier: "MT-561",
+            state: "In Progress",
+            assigned_to_worker: true
+          },
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-561",
+      state: "In Progress",
+      title: "Reassigned active issue",
+      description: "Worker should stop",
+      labels: [],
+      assigned_to_worker: false
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+    refute Process.alive?(agent_pid)
   end
 
   test "normal worker exit schedules active-state continuation retry" do
