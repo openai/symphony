@@ -279,10 +279,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "branchName" => "mt-1",
       "url" => "https://example.org/issues/MT-1",
       "assignee" => %{
-        "id" => "user-1",
-        "email" => "dev@example.com",
-        "name" => "Dev User",
-        "displayName" => "Dev"
+        "id" => "user-1"
       },
       "labels" => %{"nodes" => [%{"name" => "Backend"}]},
       "inverseRelations" => %{
@@ -309,14 +306,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "updatedAt" => "2026-01-02T00:00:00Z"
     }
 
-    issue = Client.normalize_issue_for_test(raw_issue, "dev@example.com")
+    issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
     assert issue.blocked_by == [%{id: "issue-2", identifier: "MT-2", state: "In Progress"}]
     assert issue.labels == ["backend"]
     assert issue.priority == 2
     assert issue.state == "Todo"
-    assert issue.assignee_email == "dev@example.com"
-    assert issue.assignee_display_name == "Dev"
+    assert issue.assignee_id == "user-1"
     assert issue.assigned_to_worker
   end
 
@@ -327,14 +323,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "title" => "Someone else's task",
       "state" => %{"name" => "Todo"},
       "assignee" => %{
-        "id" => "user-2",
-        "email" => "other@example.com",
-        "name" => "Other Dev",
-        "displayName" => "Other"
+        "id" => "user-2"
       }
     }
 
-    issue = Client.normalize_issue_for_test(raw_issue, "dev@example.com")
+    issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
     refute issue.assigned_to_worker
   end

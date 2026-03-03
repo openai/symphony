@@ -306,7 +306,7 @@ defmodule SymphonyElixir.Orchestrator do
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable_to_worker?(issue) ->
-        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_email || issue.assignee_id || issue.assignee_name || issue.assignee_display_name)}; stopping active agent")
+        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
 
@@ -472,9 +472,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-       %State{running: running, claimed: claimed} = state,
-       active_states,
-       terminal_states
+         %State{running: running, claimed: claimed} = state,
+         active_states,
+         terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and

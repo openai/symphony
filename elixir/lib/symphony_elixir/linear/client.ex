@@ -24,9 +24,6 @@ defmodule SymphonyElixir.Linear.Client do
         url
         assignee {
           id
-          email
-          name
-          displayName
         }
         labels {
           nodes {
@@ -72,9 +69,6 @@ defmodule SymphonyElixir.Linear.Client do
         url
         assignee {
           id
-          email
-          name
-          displayName
         }
         labels {
           nodes {
@@ -104,9 +98,6 @@ defmodule SymphonyElixir.Linear.Client do
   query SymphonyLinearViewer {
     viewer {
       id
-      email
-      name
-      displayName
     }
   }
   """
@@ -330,14 +321,17 @@ defmodule SymphonyElixir.Linear.Client do
     {:error, :linear_unknown_payload}
   end
 
-  defp decode_linear_page_response(%{
-         "data" => %{
-           "issues" => %{
-             "nodes" => nodes,
-             "pageInfo" => %{"hasNextPage" => has_next_page, "endCursor" => end_cursor}
+  defp decode_linear_page_response(
+         %{
+           "data" => %{
+             "issues" => %{
+               "nodes" => nodes,
+               "pageInfo" => %{"hasNextPage" => has_next_page, "endCursor" => end_cursor}
+             }
            }
-         }
-       }, assignee_filter) do
+         },
+         assignee_filter
+       ) do
     with {:ok, issues} <- decode_linear_response(%{"data" => %{"issues" => %{"nodes" => nodes}}}, assignee_filter) do
       {:ok, issues, %{has_next_page: has_next_page == true, end_cursor: end_cursor}}
     end
@@ -366,9 +360,6 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
-      assignee_email: assignee_field(assignee, "email"),
-      assignee_name: assignee_field(assignee, "name"),
-      assignee_display_name: assignee_field(assignee, "displayName"),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
@@ -387,19 +378,17 @@ defmodule SymphonyElixir.Linear.Client do
   defp assigned_to_worker?(%{} = assignee, %{match_values: match_values})
        when is_struct(match_values, MapSet) do
     assignee
-    |> assignee_match_values()
-    |> Enum.any?(&MapSet.member?(match_values, &1))
+    |> assignee_id()
+    |> then(fn
+      nil -> false
+      assignee_id -> MapSet.member?(match_values, assignee_id)
+    end)
   end
 
   defp assigned_to_worker?(_assignee, _assignee_filter), do: false
 
-  defp assignee_match_values(%{} = assignee) do
-    ["id", "email", "name", "displayName"]
-    |> Enum.map(&normalize_assignee_match_value(assignee[&1]))
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp assignee_match_values(_assignee), do: []
+  defp assignee_id(%{} = assignee), do: normalize_assignee_match_value(assignee["id"])
+  defp assignee_id(_assignee), do: nil
 
   defp routing_assignee_filter do
     case Config.linear_assignee() do
@@ -419,15 +408,12 @@ defmodule SymphonyElixir.Linear.Client do
       "me" ->
         case graphql(@viewer_query, %{}) do
           {:ok, %{"data" => %{"viewer" => viewer}}} when is_map(viewer) ->
-            match_values =
-              viewer
-              |> assignee_match_values()
-              |> MapSet.new()
+            case assignee_id(viewer) do
+              nil ->
+                {:error, :missing_linear_viewer_identity}
 
-            if MapSet.size(match_values) == 0 do
-              {:error, :missing_linear_viewer_identity}
-            else
-              {:ok, %{configured_assignee: "me", match_values: match_values}}
+              viewer_id ->
+                {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
             end
 
           {:ok, _body} ->
@@ -443,7 +429,7 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp normalize_assignee_match_value(value) when is_binary(value) do
-    case value |> String.trim() |> String.downcase() do
+    case value |> String.trim() do
       "" -> nil
       normalized -> normalized
     end
