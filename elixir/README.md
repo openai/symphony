@@ -78,7 +78,7 @@ If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 Optional flags:
 
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
-- `--port` also starts the HTTP observability service (default: disabled)
+- `--port` also starts the Phoenix observability service (default: disabled)
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
@@ -145,8 +145,17 @@ codex:
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML, startup and scheduling are halted until fixed.
-- `server.port` or CLI `--port` enables the optional HTTP dashboard and JSON API at `/`,
-  `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
+  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+
+## Web dashboard
+
+The observability UI now runs on a minimal Phoenix stack:
+
+- LiveView for the dashboard at `/`
+- JSON API for operational debugging under `/api/v1/*`
+- Bandit as the HTTP server
+- Phoenix dependency static assets for the LiveView client bootstrap
 
 ## Project Layout
 

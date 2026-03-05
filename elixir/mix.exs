@@ -6,6 +6,7 @@ defmodule SymphonyElixir.MixProject do
       app: :symphony_elixir,
       version: "0.1.0",
       elixir: "~> 1.19",
+      compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       test_coverage: [
         summary: [
@@ -21,9 +22,21 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.CLI,
           SymphonyElixir.Codex.AppServer,
           SymphonyElixir.Codex.DynamicTool,
+          SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
-          SymphonyElixir.Workspace
+          SymphonyElixir.Workspace,
+          SymphonyElixirWeb.DashboardLive,
+          SymphonyElixirWeb.Endpoint,
+          SymphonyElixirWeb.ErrorHTML,
+          SymphonyElixirWeb.ErrorJSON,
+          SymphonyElixirWeb.Layouts,
+          SymphonyElixirWeb.ObservabilityApiController,
+          SymphonyElixirWeb.Presenter,
+          SymphonyElixirWeb.StaticAssetController,
+          SymphonyElixirWeb.StaticAssets,
+          SymphonyElixirWeb.Router,
+          SymphonyElixirWeb.Router.Helpers
         ]
       ],
       test_ignore_filters: [
@@ -50,6 +63,12 @@ defmodule SymphonyElixir.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:bandit, "~> 1.8"},
+      {:floki, ">= 0.30.0", only: :test},
+      {:lazy_html, ">= 0.1.0", only: :test},
+      {:phoenix, "~> 1.8.0"},
+      {:phoenix_html, "~> 4.2"},
+      {:phoenix_live_view, "~> 1.1.0"},
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},

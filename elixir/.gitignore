@@ -13,6 +13,9 @@
 # Temporary files, for example, from tests.
 /tmp/
 
+# Generated browser assets.
+/priv/static/assets/
+
 # Local runtime logs.
 /log/
 /logs/

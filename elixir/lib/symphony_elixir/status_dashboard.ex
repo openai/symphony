@@ -8,6 +8,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   alias SymphonyElixir.{Config, HttpServer}
   alias SymphonyElixir.Orchestrator
+  alias SymphonyElixirWeb.ObservabilityPubSub
 
   @minimum_idle_rerender_ms 1_000
   @throughput_window_ms 5_000
@@ -81,6 +82,8 @@ defmodule SymphonyElixir.StatusDashboard do
 
   @spec notify_update(GenServer.name()) :: :ok
   def notify_update(server \\ __MODULE__) do
+    ObservabilityPubSub.broadcast_update()
+
     case GenServer.whereis(server) do
       pid when is_pid(pid) ->
         send(pid, :refresh)
