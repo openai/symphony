@@ -1,4 +1,4 @@
-.PHONY: help all setup deps fmt fmt-check lint test coverage ci dialyzer
+.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer
 
 MIX ?= mix
 
@@ -10,6 +10,9 @@ setup:
 
 deps:
 	$(MIX) deps.get
+
+build:
+	$(MIX) build
 
 fmt:
 	$(MIX) format
@@ -31,7 +34,8 @@ dialyzer:
 	$(MIX) dialyzer --format short
 
 ci:
-	$(MAKE) deps
+	$(MAKE) setup
+	$(MAKE) build
 	$(MAKE) fmt-check
 	$(MAKE) lint
 	$(MAKE) coverage
