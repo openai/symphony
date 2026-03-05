@@ -468,7 +468,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
   end
 
-  test "dashboard bootstraps liveview from dependency static assets" do
+  test "dashboard bootstraps liveview from embedded static assets" do
     orchestrator_name = Module.concat(__MODULE__, :AssetOrchestrator)
 
     {:ok, _pid} =
@@ -498,6 +498,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+
+    phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
+    assert phoenix_html_js =~ "phoenix.link.click"
 
     phoenix_js = response(get(build_conn(), "/vendor/phoenix/phoenix.js"), 200)
     assert phoenix_js =~ "var Phoenix = (() => {"
@@ -595,7 +598,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
-  test "http server starts the phoenix endpoint, resolves the bound port, and rejects invalid hosts" do
+  test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer
     assert spec.start == {HttpServer, :start_link, [[port: 0]]}
@@ -630,6 +633,32 @@ defmodule SymphonyElixir.ExtensionsTest do
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
     assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+
+    dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
+    assert dashboard_css.status == 200
+    assert dashboard_css.body =~ ":root {"
+
+    phoenix_js = Req.get!("http://127.0.0.1:#{port}/vendor/phoenix/phoenix.js")
+    assert phoenix_js.status == 200
+    assert phoenix_js.body =~ "var Phoenix = (() => {"
+
+    refresh_response =
+      Req.post!("http://127.0.0.1:#{port}/api/v1/refresh",
+        headers: [{"content-type", "application/x-www-form-urlencoded"}],
+        body: ""
+      )
+
+    assert refresh_response.status == 202
+    assert refresh_response.body["queued"] == true
+
+    method_not_allowed_response =
+      Req.post!("http://127.0.0.1:#{port}/api/v1/state",
+        headers: [{"content-type", "application/x-www-form-urlencoded"}],
+        body: ""
+      )
+
+    assert method_not_allowed_response.status == 405
+    assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
   end
