@@ -18,19 +18,27 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.agent_max_turns() == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
-    assert Config.poll_interval_ms() == 30_000
+
+    assert_raise ArgumentError, ~r/interval_ms/, fn ->
+      Config.poll_interval_ms()
+    end
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "polling.interval_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.poll_interval_ms() == 45_000
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
-    assert Config.agent_max_turns() == 20
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.max_turns"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.agent_max_turns() == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
-    assert Config.linear_active_states() == ["Todo", "Review"]
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.active_states"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
@@ -45,6 +53,7 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert :ok = Config.validate!()
+    assert Config.codex_command() == ""
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "/bin/sh app-server")
     assert :ok = Config.validate!()
@@ -62,12 +71,14 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: 123)
-    assert {:error, {:invalid_codex_approval_policy, 123}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.approval_policy"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: 123)
-    assert {:error, {:invalid_codex_thread_sandbox, 123}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.thread_sandbox"
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: 123)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end
 

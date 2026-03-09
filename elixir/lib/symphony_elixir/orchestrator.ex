@@ -200,16 +200,8 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Codex command missing in WORKFLOW.md")
         state
 
-      {:error, {:invalid_codex_approval_policy, value}} ->
-        Logger.error("Invalid codex.approval_policy in WORKFLOW.md: #{inspect(value)}")
-        state
-
-      {:error, {:invalid_codex_thread_sandbox, value}} ->
-        Logger.error("Invalid codex.thread_sandbox in WORKFLOW.md: #{inspect(value)}")
-        state
-
-      {:error, {:invalid_codex_turn_sandbox_policy, reason}} ->
-        Logger.error("Invalid codex.turn_sandbox_policy in WORKFLOW.md: #{inspect(reason)}")
+      {:error, {:invalid_workflow_config, message}} ->
+        Logger.error("Invalid WORKFLOW.md config: #{message}")
         state
 
       {:error, {:missing_workflow_file, path, reason}} ->

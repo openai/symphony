@@ -703,19 +703,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
-    assert Config.linear_active_states() == ["Todo", "In Progress"]
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.active_states"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_concurrent_agents: "bad")
-    assert Config.max_concurrent_agents() == 10
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.max_concurrent_agents"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_turn_timeout_ms: "bad")
-    assert Config.codex_turn_timeout_ms() == 3_600_000
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.turn_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_read_timeout_ms: "bad")
-    assert Config.codex_read_timeout_ms() == 5_000
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.read_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: "bad")
-    assert Config.codex_stall_timeout_ms() == 300_000
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.stall_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},
@@ -732,49 +737,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       server_host: 123
     )
 
-    assert Config.linear_active_states() == ["Todo", "In Progress"]
-    assert Config.linear_terminal_states() == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
-    assert Config.poll_interval_ms() == 30_000
-    assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
-    assert Config.max_retry_backoff_ms() == 300_000
-    assert Config.max_concurrent_agents_for_state("Todo") == 1
-    assert Config.max_concurrent_agents_for_state("Review") == 10
-    assert Config.hook_timeout_ms() == 60_000
-    assert Config.observability_enabled?()
-    assert Config.observability_refresh_ms() == 1_000
-    assert Config.observability_render_interval_ms() == 16
-    assert Config.server_port() == nil
-    assert Config.server_host() == "123"
+    assert {:error, {:invalid_workflow_config, _message}} = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
-
-    assert Config.codex_approval_policy() == %{
-             "reject" => %{
-               "sandbox_approval" => true,
-               "rules" => true,
-               "mcp_elicitations" => true
-             }
-           }
-
-    assert {:error, {:invalid_codex_approval_policy, ""}} = Config.validate!()
+    assert :ok = Config.validate!()
+    assert Config.codex_approval_policy() == ""
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "")
-    assert Config.codex_thread_sandbox() == "workspace-write"
-    assert {:error, {:invalid_codex_thread_sandbox, ""}} = Config.validate!()
+    assert :ok = Config.validate!()
+    assert Config.codex_thread_sandbox() == ""
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_turn_sandbox_policy: "bad")
-
-    assert Config.codex_turn_sandbox_policy() == %{
-             "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
-             "readOnlyAccess" => %{"type" => "fullAccess"},
-             "networkAccess" => false,
-             "excludeTmpdirEnvVar" => false,
-             "excludeSlashTmp" => false
-           }
-
-    assert {:error, {:invalid_codex_turn_sandbox_policy, {:unsupported_value, "bad"}}} =
-             Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.turn_sandbox_policy"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_approval_policy: "future-policy",
@@ -851,7 +826,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert Config.linear_api_token() == "env:#{api_key_env_var}"
-    assert Config.workspace_root() == "env:#{workspace_env_var}"
+    assert Config.workspace_root() == Path.expand("env:#{workspace_env_var}")
   end
 
   test "config supports per-state max concurrent agent overrides" do
