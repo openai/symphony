@@ -7,20 +7,30 @@ defmodule SymphonyElixir.Config.Schema do
 
   @primary_key false
 
+  @type t :: %__MODULE__{}
+
   defmodule StringOrMap do
     @moduledoc false
     @behaviour Ecto.Type
 
+    @spec type() :: :map
     def type, do: :map
+
+    @spec embed_as(term()) :: :self
     def embed_as(_format), do: :self
+
+    @spec equal?(term(), term()) :: boolean()
     def equal?(left, right), do: left == right
 
+    @spec cast(term()) :: {:ok, String.t() | map()} | :error
     def cast(value) when is_binary(value) or is_map(value), do: {:ok, value}
     def cast(_value), do: :error
 
+    @spec load(term()) :: {:ok, String.t() | map()} | :error
     def load(value) when is_binary(value) or is_map(value), do: {:ok, value}
     def load(_value), do: :error
 
+    @spec dump(term()) :: {:ok, String.t() | map()} | :error
     def dump(value) when is_binary(value) or is_map(value), do: {:ok, value}
     def dump(_value), do: :error
   end
@@ -33,18 +43,21 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
 
     embedded_schema do
-      field :kind, :string
-      field :endpoint, :string, default: "https://api.linear.app/graphql"
-      field :api_key, :string
-      field :project_slug, :string
-      field :assignee, :string
-      field :active_states, {:array, :string}, default: ["Todo", "In Progress"]
-      field :terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+      field(:kind, :string)
+      field(:endpoint, :string, default: "https://api.linear.app/graphql")
+      field(:api_key, :string)
+      field(:project_slug, :string)
+      field(:assignee, :string)
+      field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
+      field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+      |> cast(
+        attrs,
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
     end
@@ -57,9 +70,10 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field :interval_ms, :integer, default: 30_000
+      field(:interval_ms, :integer, default: 30_000)
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:interval_ms], empty_values: [])
@@ -74,9 +88,10 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field :root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces")
+      field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:root], empty_values: [])
@@ -92,15 +107,18 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field :max_concurrent_agents, :integer, default: 10
-      field :max_turns, :integer, default: 20
-      field :max_retry_backoff_ms, :integer, default: 300_000
-      field :max_concurrent_agents_by_state, :map, default: %{}
+      field(:max_concurrent_agents, :integer, default: 10)
+      field(:max_turns, :integer, default: 20)
+      field(:max_retry_backoff_ms, :integer, default: 300_000)
+      field(:max_concurrent_agents_by_state, :map, default: %{})
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+      |> cast(
+        attrs,
+        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
@@ -118,8 +136,9 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field :command, :string, default: "codex app-server"
-      field :approval_policy, StringOrMap,
+      field(:command, :string, default: "codex app-server")
+
+      field(:approval_policy, StringOrMap,
         default: %{
           "reject" => %{
             "sandbox_approval" => true,
@@ -127,25 +146,32 @@ defmodule SymphonyElixir.Config.Schema do
             "mcp_elicitations" => true
           }
         }
+      )
 
-      field :thread_sandbox, :string, default: "workspace-write"
-      field :turn_sandbox_policy, :map
-      field :turn_timeout_ms, :integer, default: 3_600_000
-      field :read_timeout_ms, :integer, default: 5_000
-      field :stall_timeout_ms, :integer, default: 300_000
+      field(:thread_sandbox, :string, default: "workspace-write")
+      field(:turn_sandbox_policy, :map)
+      field(:turn_timeout_ms, :integer, default: 3_600_000)
+      field(:read_timeout_ms, :integer, default: 5_000)
+      field(:stall_timeout_ms, :integer, default: 300_000)
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [
-        :command,
-        :approval_policy,
-        :thread_sandbox,
-        :turn_sandbox_policy,
-        :turn_timeout_ms,
-        :read_timeout_ms,
-        :stall_timeout_ms
-      ], empty_values: [])
+      |> cast(
+        attrs,
+        [
+          :command,
+          :approval_policy,
+          :thread_sandbox,
+          :turn_sandbox_policy,
+          :turn_timeout_ms,
+          :read_timeout_ms,
+          :stall_timeout_ms
+        ],
+        empty_values: []
+      )
+      |> validate_required([:command])
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
@@ -159,18 +185,17 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field :after_create, :string
-      field :before_run, :string
-      field :after_run, :string
-      field :before_remove, :string
-      field :timeout_ms, :integer, default: 60_000
+      field(:after_create, :string)
+      field(:before_run, :string)
+      field(:after_run, :string)
+      field(:before_remove, :string)
+      field(:timeout_ms, :integer, default: 60_000)
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:after_create, :before_run, :after_run, :before_remove, :timeout_ms],
-        empty_values: []
-      )
+      |> cast(attrs, [:after_create, :before_run, :after_run, :before_remove, :timeout_ms], empty_values: [])
       |> validate_number(:timeout_ms, greater_than: 0)
     end
   end
@@ -182,11 +207,12 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field :dashboard_enabled, :boolean, default: true
-      field :refresh_ms, :integer, default: 1_000
-      field :render_interval_ms, :integer, default: 16
+      field(:dashboard_enabled, :boolean, default: true)
+      field(:refresh_ms, :integer, default: 1_000)
+      field(:render_interval_ms, :integer, default: 16)
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms], empty_values: [])
@@ -202,10 +228,11 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field :port, :integer
-      field :host, :string, default: "127.0.0.1"
+      field(:port, :integer)
+      field(:host, :string, default: "127.0.0.1")
     end
 
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:port, :host], empty_values: [])
@@ -214,17 +241,17 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   embedded_schema do
-    embeds_one :tracker, Tracker, on_replace: :update, defaults_to_struct: true
-    embeds_one :polling, Polling, on_replace: :update, defaults_to_struct: true
-    embeds_one :workspace, Workspace, on_replace: :update, defaults_to_struct: true
-    embeds_one :agent, Agent, on_replace: :update, defaults_to_struct: true
-    embeds_one :codex, Codex, on_replace: :update, defaults_to_struct: true
-    embeds_one :hooks, Hooks, on_replace: :update, defaults_to_struct: true
-    embeds_one :observability, Observability, on_replace: :update, defaults_to_struct: true
-    embeds_one :server, Server, on_replace: :update, defaults_to_struct: true
+    embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
   end
 
-  @spec parse(map()) :: {:ok, map()} | {:error, {:invalid_workflow_config, String.t()}}
+  @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
     config
     |> normalize_keys()
@@ -240,14 +267,14 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  @spec resolve_turn_sandbox_policy(map(), Path.t() | nil) :: map()
+  @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
-    case get_in(settings, [:codex, :turn_sandbox_policy]) do
+    case settings.codex.turn_sandbox_policy do
       %{} = policy ->
         policy
 
       _ ->
-        default_turn_sandbox_policy(workspace || get_in(settings, [:workspace, :root]))
+        default_turn_sandbox_policy(workspace || settings.workspace.root)
     end
   end
 
@@ -257,6 +284,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   @doc false
+  @spec normalize_state_limits(nil | map()) :: map()
   def normalize_state_limits(nil), do: %{}
 
   def normalize_state_limits(limits) when is_map(limits) do
@@ -266,6 +294,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   @doc false
+  @spec validate_state_limits(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_state_limits(changeset, field) do
     validate_change(changeset, field, fn ^field, limits ->
       Enum.flat_map(limits, fn {state_name, limit} ->
@@ -297,31 +326,25 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
-    settings
-    |> deep_to_map()
-    |> update_in([:tracker, :api_key], &resolve_secret_setting(&1, System.get_env("LINEAR_API_KEY")))
-    |> update_in([:tracker, :assignee], &resolve_secret_setting(&1, System.get_env("LINEAR_ASSIGNEE")))
-    |> update_in([:workspace, :root], &resolve_path_value(&1, Path.join(System.tmp_dir!(), "symphony_workspaces")))
-    |> update_in([:codex, :approval_policy], &normalize_keys/1)
-    |> update_in([:codex, :turn_sandbox_policy], &normalize_optional_map/1)
-  end
+    tracker = %{
+      settings.tracker
+      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+    }
 
-  defp deep_to_map(%_{} = struct) do
-    struct
-    |> Map.from_struct()
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      Map.put(acc, key, deep_to_map(value))
-    end)
-  end
+    workspace = %{
+      settings.workspace
+      | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
+    }
 
-  defp deep_to_map(value) when is_map(value) do
-    Enum.reduce(value, %{}, fn {key, nested}, acc ->
-      Map.put(acc, key, deep_to_map(nested))
-    end)
-  end
+    codex = %{
+      settings.codex
+      | approval_policy: normalize_keys(settings.codex.approval_policy),
+        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
+    }
 
-  defp deep_to_map(value) when is_list(value), do: Enum.map(value, &deep_to_map/1)
-  defp deep_to_map(value), do: value
+    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+  end
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -334,7 +357,6 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
-  defp normalize_optional_map(value), do: value
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
@@ -360,10 +382,6 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defp resolve_secret_setting(_value, fallback), do: normalize_secret_value(fallback)
-
-  defp resolve_path_value(nil, default), do: Path.expand(default)
-
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do
       :missing ->
@@ -376,10 +394,6 @@ defmodule SymphonyElixir.Config.Schema do
         Path.expand(path)
     end
   end
-
-  defp resolve_path_value(_value, default), do: Path.expand(default)
-
-  defp resolve_env_value(nil, fallback), do: fallback
 
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do
@@ -394,8 +408,6 @@ defmodule SymphonyElixir.Config.Schema do
         value
     end
   end
-
-  defp resolve_env_value(_value, fallback), do: fallback
 
   defp normalize_path_token(value) when is_binary(value) do
     case env_reference_name(value) do
@@ -467,13 +479,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp flatten_errors(errors, prefix) when is_list(errors) do
-    Enum.flat_map(errors, fn
-      value when is_binary(value) ->
-        [prefix <> " " <> value]
-
-      value ->
-        flatten_errors(value, prefix)
-    end)
+    Enum.map(errors, &(prefix <> " " <> &1))
   end
 
   defp translate_error({message, options}) do
@@ -482,9 +488,6 @@ defmodule SymphonyElixir.Config.Schema do
     end)
   end
 
-  defp error_value_to_string(value) when is_binary(value), do: value
   defp error_value_to_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp error_value_to_string(value) when is_integer(value), do: Integer.to_string(value)
-  defp error_value_to_string(value) when is_float(value), do: Float.to_string(value)
   defp error_value_to_string(value), do: inspect(value)
 end

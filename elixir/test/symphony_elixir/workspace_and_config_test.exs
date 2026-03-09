@@ -1,5 +1,8 @@
 defmodule SymphonyElixir.WorkspaceAndConfigTest do
   use SymphonyElixir.TestSupport
+  alias Ecto.Changeset
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -533,8 +536,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         hook_before_remove: "echo before_remove > \"#{before_remove_marker}\""
       )
 
-      assert Config.workspace_hooks().after_create =~ "echo after_create > after_create.log"
-      assert Config.workspace_hooks().before_remove =~ "echo before_remove >"
+      config = Config.settings!()
+      assert config.hooks.after_create =~ "echo after_create > after_create.log"
+      assert config.hooks.before_remove =~ "echo before_remove >"
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS")
       assert File.read!(Path.join(workspace, "after_create.log")) == "after_create\n"
@@ -655,14 +659,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_project_slug: nil
     )
 
-    assert Config.linear_endpoint() == "https://api.linear.app/graphql"
-    assert Config.linear_api_token() == nil
-    assert Config.linear_project_slug() == nil
-    assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
-    assert Config.max_concurrent_agents() == 10
-    assert Config.codex_command() == "codex app-server"
+    config = Config.settings!()
+    assert config.tracker.endpoint == "https://api.linear.app/graphql"
+    assert config.tracker.api_key == nil
+    assert config.tracker.project_slug == nil
+    assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert config.agent.max_concurrent_agents == 10
+    assert config.codex.command == "codex app-server"
 
-    assert Config.codex_approval_policy() == %{
+    assert config.codex.approval_policy == %{
              "reject" => %{
                "sandbox_approval" => true,
                "rules" => true,
@@ -670,7 +675,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              }
            }
 
-    assert Config.codex_thread_sandbox() == "workspace-write"
+    assert config.codex.thread_sandbox == "workspace-write"
 
     assert Config.codex_turn_sandbox_policy() == %{
              "type" => "workspaceWrite",
@@ -681,12 +686,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "excludeSlashTmp" => false
            }
 
-    assert Config.codex_turn_timeout_ms() == 3_600_000
-    assert Config.codex_read_timeout_ms() == 5_000
-    assert Config.codex_stall_timeout_ms() == 300_000
+    assert config.codex.turn_timeout_ms == 3_600_000
+    assert config.codex.read_timeout_ms == 5_000
+    assert config.codex.stall_timeout_ms == 300_000
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
-    assert Config.codex_command() == "codex app-server --model gpt-5.3-codex"
+    assert Config.settings!().codex.command == "codex app-server --model gpt-5.3-codex"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_approval_policy: "on-request",
@@ -694,8 +699,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["/tmp/workspace", "/tmp/cache"]}
     )
 
-    assert Config.codex_approval_policy() == "on-request"
-    assert Config.codex_thread_sandbox() == "workspace-write"
+    config = Config.settings!()
+    assert config.codex.approval_policy == "on-request"
+    assert config.codex.thread_sandbox == "workspace-write"
 
     assert Config.codex_turn_sandbox_policy() == %{
              "type" => "workspaceWrite",
@@ -741,11 +747,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
     assert :ok = Config.validate!()
-    assert Config.codex_approval_policy() == ""
+    assert Config.settings!().codex.approval_policy == ""
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "")
     assert :ok = Config.validate!()
-    assert Config.codex_thread_sandbox() == ""
+    assert Config.settings!().codex.thread_sandbox == ""
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_turn_sandbox_policy: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -760,8 +766,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       }
     )
 
-    assert Config.codex_approval_policy() == "future-policy"
-    assert Config.codex_thread_sandbox() == "future-sandbox"
+    config = Config.settings!()
+    assert config.codex.approval_policy == "future-policy"
+    assert config.codex.thread_sandbox == "future-sandbox"
 
     assert Config.codex_turn_sandbox_policy() == %{
              "type" => "futureSandbox",
@@ -771,7 +778,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
-    assert Config.codex_command() == "codex app-server"
+    assert Config.settings!().codex.command == "codex app-server"
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do
@@ -798,9 +805,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       codex_command: "#{codex_bin} app-server"
     )
 
-    assert Config.linear_api_token() == api_key
-    assert Config.workspace_root() == Path.expand(workspace_root)
-    assert Config.codex_command() == "#{codex_bin} app-server"
+    config = Config.settings!()
+    assert config.tracker.api_key == api_key
+    assert config.workspace.root == Path.expand(workspace_root)
+    assert config.codex.command == "#{codex_bin} app-server"
   end
 
   test "config no longer resolves legacy env: references" do
@@ -825,8 +833,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       workspace_root: "env:#{workspace_env_var}"
     )
 
-    assert Config.linear_api_token() == "env:#{api_key_env_var}"
-    assert Config.workspace_root() == Path.expand("env:#{workspace_env_var}")
+    config = Config.settings!()
+    assert config.tracker.api_key == "env:#{api_key_env_var}"
+    assert config.workspace.root == Path.expand("env:#{workspace_env_var}")
   end
 
   test "config supports per-state max concurrent agent overrides" do
@@ -843,12 +852,128 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     File.write!(Workflow.workflow_file_path(), workflow)
 
-    assert Config.max_concurrent_agents() == 10
+    assert Config.settings!().agent.max_concurrent_agents == 10
     assert Config.max_concurrent_agents_for_state("Todo") == 1
     assert Config.max_concurrent_agents_for_state("In Progress") == 4
     assert Config.max_concurrent_agents_for_state("In Review") == 2
     assert Config.max_concurrent_agents_for_state("Closed") == 10
     assert Config.max_concurrent_agents_for_state(:not_a_string) == 10
+  end
+
+  test "schema helpers cover custom type and state limit validation" do
+    assert StringOrMap.type() == :map
+    assert StringOrMap.embed_as(:json) == :self
+    assert StringOrMap.equal?(%{"a" => 1}, %{"a" => 1})
+    refute StringOrMap.equal?(%{"a" => 1}, %{"a" => 2})
+
+    assert {:ok, "value"} = StringOrMap.cast("value")
+    assert {:ok, %{"a" => 1}} = StringOrMap.cast(%{"a" => 1})
+    assert :error = StringOrMap.cast(123)
+
+    assert {:ok, "value"} = StringOrMap.load("value")
+    assert :error = StringOrMap.load(123)
+
+    assert {:ok, %{"a" => 1}} = StringOrMap.dump(%{"a" => 1})
+    assert :error = StringOrMap.dump(123)
+
+    assert Schema.normalize_state_limits(nil) == %{}
+
+    assert Schema.normalize_state_limits(%{"In Progress" => 2, todo: 1}) == %{
+             "todo" => 1,
+             "in progress" => 2
+           }
+
+    changeset =
+      {%{}, %{limits: :map}}
+      |> Changeset.cast(%{limits: %{"" => 1, "todo" => 0}}, [:limits])
+      |> Schema.validate_state_limits(:limits)
+
+    assert changeset.errors == [
+             limits: {"state names must not be blank", []},
+             limits: {"limits must be positive integers", []}
+           ]
+  end
+
+  test "schema parse normalizes policy keys and env-backed fallbacks" do
+    missing_workspace_env = "SYMP_MISSING_WORKSPACE_#{System.unique_integer([:positive])}"
+    empty_secret_env = "SYMP_EMPTY_SECRET_#{System.unique_integer([:positive])}"
+    missing_secret_env = "SYMP_MISSING_SECRET_#{System.unique_integer([:positive])}"
+
+    previous_missing_workspace_env = System.get_env(missing_workspace_env)
+    previous_empty_secret_env = System.get_env(empty_secret_env)
+    previous_missing_secret_env = System.get_env(missing_secret_env)
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+
+    System.delete_env(missing_workspace_env)
+    System.put_env(empty_secret_env, "")
+    System.delete_env(missing_secret_env)
+    System.put_env("LINEAR_API_KEY", "fallback-linear-token")
+
+    on_exit(fn ->
+      restore_env(missing_workspace_env, previous_missing_workspace_env)
+      restore_env(empty_secret_env, previous_empty_secret_env)
+      restore_env(missing_secret_env, previous_missing_secret_env)
+      restore_env("LINEAR_API_KEY", previous_linear_api_key)
+    end)
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               tracker: %{api_key: "$#{empty_secret_env}"},
+               workspace: %{root: "$#{missing_workspace_env}"},
+               codex: %{approval_policy: %{reject: %{sandbox_approval: true}}}
+             })
+
+    assert settings.tracker.api_key == nil
+    assert settings.workspace.root == Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+
+    assert settings.codex.approval_policy == %{
+             "reject" => %{"sandbox_approval" => true}
+           }
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               tracker: %{api_key: "$#{missing_secret_env}"},
+               workspace: %{root: ""}
+             })
+
+    assert settings.tracker.api_key == "fallback-linear-token"
+    assert settings.workspace.root == Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+  end
+
+  test "schema resolves sandbox policies from explicit and default workspaces" do
+    explicit_policy = %{"type" => "workspaceWrite", "writableRoots" => ["/tmp/explicit"]}
+
+    assert Schema.resolve_turn_sandbox_policy(%Schema{
+             codex: %Codex{turn_sandbox_policy: explicit_policy},
+             workspace: %Schema.Workspace{root: "/tmp/ignored"}
+           }) == explicit_policy
+
+    assert Schema.resolve_turn_sandbox_policy(%Schema{
+             codex: %Codex{turn_sandbox_policy: nil},
+             workspace: %Schema.Workspace{root: ""}
+           }) == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
+           }
+
+    assert Schema.resolve_turn_sandbox_policy(
+             %Schema{
+               codex: %Codex{turn_sandbox_policy: nil},
+               workspace: %Schema.Workspace{root: "/tmp/ignored"}
+             },
+             "/tmp/workspace"
+           ) == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => [Path.expand("/tmp/workspace")],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
+           }
   end
 
   test "workflow prompt is used when building base prompt" do

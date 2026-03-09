@@ -143,7 +143,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp validate_workspace_cwd(workspace) when is_binary(workspace) do
     workspace_path = Path.expand(workspace)
-    workspace_root = Path.expand(Config.workspace_root())
+    workspace_root = Path.expand(Config.settings!().workspace.root)
 
     root_prefix = workspace_root <> "/"
 
@@ -172,7 +172,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.codex_command())],
+            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
             cd: String.to_charlist(workspace),
             line: @port_line_bytes
           ]
@@ -277,7 +277,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
-    receive_loop(port, on_message, Config.codex_turn_timeout_ms(), "", tool_executor, auto_approve_requests)
+    receive_loop(
+      port,
+      on_message,
+      Config.settings!().codex.turn_timeout_ms,
+      "",
+      tool_executor,
+      auto_approve_requests
+    )
   end
 
   defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests) do
@@ -820,7 +827,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp await_response(port, request_id) do
-    with_timeout_response(port, request_id, Config.codex_read_timeout_ms(), "")
+    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")
   end
 
   defp with_timeout_response(port, request_id, timeout_ms, pending_line) do

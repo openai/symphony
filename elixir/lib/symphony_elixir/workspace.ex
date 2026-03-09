@@ -71,7 +71,7 @@ defmodule SymphonyElixir.Workspace do
   @spec remove_issue_workspaces(term()) :: :ok
   def remove_issue_workspaces(identifier) when is_binary(identifier) do
     safe_id = safe_identifier(identifier)
-    workspace = Path.join(Config.workspace_root(), safe_id)
+    workspace = Path.join(Config.settings!().workspace.root, safe_id)
 
     remove(workspace)
     :ok
@@ -84,8 +84,9 @@ defmodule SymphonyElixir.Workspace do
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil) :: :ok | {:error, term()}
   def run_before_run_hook(workspace, issue_or_identifier) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
+    hooks = Config.settings!().hooks
 
-    case Config.workspace_hooks()[:before_run] do
+    case hooks.before_run do
       nil ->
         :ok
 
@@ -97,8 +98,9 @@ defmodule SymphonyElixir.Workspace do
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
+    hooks = Config.settings!().hooks
 
-    case Config.workspace_hooks()[:after_run] do
+    case hooks.after_run do
       nil ->
         :ok
 
@@ -109,7 +111,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp workspace_path_for_issue(safe_id) when is_binary(safe_id) do
-    Path.join(Config.workspace_root(), safe_id)
+    Path.join(Config.settings!().workspace.root, safe_id)
   end
 
   defp safe_identifier(identifier) do
@@ -123,9 +125,11 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?) do
+    hooks = Config.settings!().hooks
+
     case created? do
       true ->
-        case Config.workspace_hooks()[:after_create] do
+        case hooks.after_create do
           nil ->
             :ok
 
@@ -139,9 +143,11 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace) do
+    hooks = Config.settings!().hooks
+
     case File.dir?(workspace) do
       true ->
-        case Config.workspace_hooks()[:before_remove] do
+        case hooks.before_remove do
           nil ->
             :ok
 
@@ -164,7 +170,7 @@ defmodule SymphonyElixir.Workspace do
   defp ignore_hook_failure({:error, _reason}), do: :ok
 
   defp run_hook(command, workspace, issue_context, hook_name) do
-    timeout_ms = Config.workspace_hooks()[:timeout_ms]
+    timeout_ms = Config.settings!().hooks.timeout_ms
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace}")
 
@@ -212,7 +218,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp validate_workspace_path(workspace) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    root = Path.expand(Config.workspace_root())
+    root = Path.expand(Config.settings!().workspace.root)
     root_prefix = root <> "/"
 
     cond do

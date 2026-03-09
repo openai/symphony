@@ -105,10 +105,11 @@ defmodule SymphonyElixir.Linear.Client do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
-    project_slug = Config.linear_project_slug()
+    tracker = Config.settings!().tracker
+    project_slug = tracker.project_slug
 
     cond do
-      is_nil(Config.linear_api_token()) ->
+      is_nil(tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
       is_nil(project_slug) ->
@@ -116,7 +117,7 @@ defmodule SymphonyElixir.Linear.Client do
 
       true ->
         with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(project_slug, Config.linear_active_states(), assignee_filter)
+          do_fetch_by_states(project_slug, tracker.active_states, assignee_filter)
         end
     end
   end
@@ -128,10 +129,11 @@ defmodule SymphonyElixir.Linear.Client do
     if normalized_states == [] do
       {:ok, []}
     else
-      project_slug = Config.linear_project_slug()
+      tracker = Config.settings!().tracker
+      project_slug = tracker.project_slug
 
       cond do
-        is_nil(Config.linear_api_token()) ->
+        is_nil(tracker.api_key) ->
           {:error, :missing_linear_api_token}
 
         is_nil(project_slug) ->
@@ -325,7 +327,7 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp graphql_headers do
-    case Config.linear_api_token() do
+    case Config.settings!().tracker.api_key do
       nil ->
         {:error, :missing_linear_api_token}
 
@@ -339,7 +341,7 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp post_graphql_request(payload, headers) do
-    Req.post(Config.linear_endpoint(),
+    Req.post(Config.settings!().tracker.endpoint,
       headers: headers,
       json: payload,
       connect_options: [timeout: 30_000]
@@ -432,7 +434,7 @@ defmodule SymphonyElixir.Linear.Client do
   defp assignee_id(%{} = assignee), do: normalize_assignee_match_value(assignee["id"])
 
   defp routing_assignee_filter do
-    case Config.linear_assignee() do
+    case Config.settings!().tracker.assignee do
       nil ->
         {:ok, nil}
 

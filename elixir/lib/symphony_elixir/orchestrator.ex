@@ -49,10 +49,11 @@ defmodule SymphonyElixir.Orchestrator do
   @impl true
   def init(_opts) do
     now_ms = System.monotonic_time(:millisecond)
+    config = Config.settings!()
 
     state = %State{
-      poll_interval_ms: Config.poll_interval_ms(),
-      max_concurrent_agents: Config.max_concurrent_agents(),
+      poll_interval_ms: config.polling.interval_ms,
+      max_concurrent_agents: config.agent.max_concurrent_agents,
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
       codex_totals: @empty_codex_totals,
@@ -194,10 +195,6 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, {:unsupported_tracker_kind, kind}} ->
         Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
 
-        state
-
-      {:error, :missing_codex_command} ->
-        Logger.error("Codex command missing in WORKFLOW.md")
         state
 
       {:error, {:invalid_workflow_config, message}} ->
@@ -357,7 +354,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = Config.codex_stall_timeout_ms()
+    timeout_ms = Config.settings!().codex.stall_timeout_ms
 
     cond do
       timeout_ms <= 0 ->
@@ -554,14 +551,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminal_state_set do
-    Config.linear_terminal_states()
+    Config.settings!().tracker.terminal_states
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
   end
 
   defp active_state_set do
-    Config.linear_active_states()
+    Config.settings!().tracker.active_states
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
@@ -766,7 +763,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(_identifier), do: :ok
 
   defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.linear_terminal_states()) do
+    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
       {:ok, issues} ->
         issues
         |> Enum.each(fn
@@ -820,7 +817,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
-    min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.max_retry_backoff_ms())
+    min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.settings!().agent.max_retry_backoff_ms)
   end
 
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
@@ -869,7 +866,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp available_slots(%State{} = state) do
     max(
-      (state.max_concurrent_agents || Config.max_concurrent_agents()) - map_size(state.running),
+      (state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents) -
+        map_size(state.running),
       0
     )
   end
@@ -1090,10 +1088,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp record_session_completion_totals(state, _running_entry), do: state
 
   defp refresh_runtime_config(%State{} = state) do
+    config = Config.settings!()
+
     %{
       state
-      | poll_interval_ms: Config.poll_interval_ms(),
-        max_concurrent_agents: Config.max_concurrent_agents()
+      | poll_interval_ms: config.polling.interval_ms,
+        max_concurrent_agents: config.agent.max_concurrent_agents
     }
   end
 

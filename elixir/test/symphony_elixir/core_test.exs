@@ -11,30 +11,31 @@ defmodule SymphonyElixir.CoreTest do
       codex_command: nil
     )
 
-    assert Config.poll_interval_ms() == 30_000
-    assert Config.linear_active_states() == ["Todo", "In Progress"]
-    assert Config.linear_terminal_states() == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
-    assert Config.linear_assignee() == nil
-    assert Config.agent_max_turns() == 20
+    config = Config.settings!()
+    assert config.polling.interval_ms == 30_000
+    assert config.tracker.active_states == ["Todo", "In Progress"]
+    assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    assert config.tracker.assignee == nil
+    assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
     assert_raise ArgumentError, ~r/interval_ms/, fn ->
-      Config.poll_interval_ms()
+      Config.settings!().polling.interval_ms
     end
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "polling.interval_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
-    assert Config.poll_interval_ms() == 45_000
+    assert Config.settings!().polling.interval_ms == 45_000
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "agent.max_turns"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
-    assert Config.agent_max_turns() == 5
+    assert Config.settings!().agent.max_turns == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -52,8 +53,13 @@ defmodule SymphonyElixir.CoreTest do
       codex_command: ""
     )
 
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.command"
+    assert message =~ "can't be blank"
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_command: "   ")
     assert :ok = Config.validate!()
-    assert Config.codex_command() == ""
+    assert Config.settings!().codex.command == "   "
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "/bin/sh app-server")
     assert :ok = Config.validate!()
@@ -122,8 +128,8 @@ defmodule SymphonyElixir.CoreTest do
       codex_command: "/bin/sh app-server"
     )
 
-    assert Config.linear_api_token() == env_api_key
-    assert Config.linear_project_slug() == "project"
+    assert Config.settings!().tracker.api_key == env_api_key
+    assert Config.settings!().tracker.project_slug == "project"
     assert :ok = Config.validate!()
   end
 
@@ -140,7 +146,7 @@ defmodule SymphonyElixir.CoreTest do
       codex_command: "/bin/sh app-server"
     )
 
-    assert Config.linear_assignee() == env_assignee
+    assert Config.settings!().tracker.assignee == env_assignee
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do

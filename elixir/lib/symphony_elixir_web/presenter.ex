@@ -66,7 +66,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_id: issue_id_from_entries(running, retry),
       status: issue_status(running, retry),
       workspace: %{
-        path: Path.join(Config.workspace_root(), issue_identifier)
+        path: Path.join(Config.settings!().workspace.root, issue_identifier)
       },
       attempts: %{
         restart_count: restart_count(retry),
