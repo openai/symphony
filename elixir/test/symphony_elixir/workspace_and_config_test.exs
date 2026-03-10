@@ -1039,7 +1039,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
-  test "runtime sandbox policy resolution rejects unsafe custom policies" do
+  test "runtime sandbox policy resolution accepts trusted writable roots and rejects malformed policies" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1049,20 +1049,33 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       issue_workspace = Path.join(workspace_root, "MT-100")
+      shared_root = Path.join(test_root, "shared-cache")
       cache_root = Path.join(issue_workspace, "cache")
 
+      File.mkdir_p!(shared_root)
       File.mkdir_p!(cache_root)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         codex_turn_sandbox_policy: %{
           type: "workspaceWrite",
-          writableRoots: [workspace_root]
+          writableRoots: [shared_root]
         }
       )
 
-      assert {:error, {:unsafe_turn_sandbox_policy, {:writable_root_outside_workspace, _, _}}} =
-               Config.codex_runtime_settings(issue_workspace)
+      assert {:ok, canonical_shared_root} =
+               SymphonyElixir.PathSafety.canonicalize(shared_root)
+
+      assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
+
+      assert runtime_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => [canonical_shared_root],
+               "readOnlyAccess" => %{"type" => "fullAccess"},
+               "networkAccess" => false,
+               "excludeTmpdirEnvVar" => false,
+               "excludeSlashTmp" => false
+             }
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,

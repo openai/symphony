@@ -471,10 +471,10 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp validate_runtime_turn_sandbox_policy(policy, workspace_root)
        when is_map(policy) and is_binary(workspace_root) do
-    with {:ok, canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
+    with {:ok, _canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
       case Map.get(policy, "type") do
         "workspaceWrite" ->
-          validate_workspace_write_policy(policy, canonical_workspace_root)
+          validate_workspace_write_policy(policy)
 
         "readOnly" ->
           validate_read_only_policy(policy)
@@ -489,10 +489,9 @@ defmodule SymphonyElixir.Config.Schema do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
   end
 
-  defp validate_workspace_write_policy(policy, canonical_workspace_root) do
+  defp validate_workspace_write_policy(policy) do
     with :ok <- validate_network_access_disabled(policy),
-         {:ok, writable_roots} <-
-           validate_writable_roots(Map.get(policy, "writableRoots"), canonical_workspace_root) do
+         {:ok, writable_roots} <- validate_writable_roots(Map.get(policy, "writableRoots")) do
       {:ok,
        policy
        |> Map.put("type", "workspaceWrite")
@@ -518,11 +517,10 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defp validate_writable_roots(writable_roots, canonical_workspace_root)
-       when is_list(writable_roots) and writable_roots != [] do
+  defp validate_writable_roots(writable_roots) when is_list(writable_roots) and writable_roots != [] do
     writable_roots
     |> Enum.reduce_while({:ok, []}, fn root, {:ok, acc} ->
-      case validate_writable_root(root, canonical_workspace_root) do
+      case validate_writable_root(root) do
         {:ok, canonical_root} -> {:cont, {:ok, [canonical_root | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -533,19 +531,18 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defp validate_writable_roots(_writable_roots, _canonical_workspace_root) do
+  defp validate_writable_roots(_writable_roots) do
     {:error, {:unsafe_turn_sandbox_policy, :missing_writable_roots}}
   end
 
-  defp validate_writable_root(root, canonical_workspace_root) when is_binary(root) do
-    with :ok <- validate_absolute_writable_root(root),
-         {:ok, canonical_root} <- PathSafety.canonicalize(root),
-         :ok <- validate_writable_root_boundary(canonical_root, canonical_workspace_root) do
-      {:ok, canonical_root}
+  defp validate_writable_root(root) when is_binary(root) do
+    case validate_absolute_writable_root(root) do
+      :ok -> PathSafety.canonicalize(root)
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp validate_writable_root(root, _canonical_workspace_root) do
+  defp validate_writable_root(root) do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_writable_root, root}}}
   end
 
@@ -555,29 +552,6 @@ defmodule SymphonyElixir.Config.Schema do
     else
       {:error, {:unsafe_turn_sandbox_policy, {:relative_writable_root, root}}}
     end
-  end
-
-  defp validate_writable_root_boundary(canonical_root, canonical_workspace_root)
-       when is_binary(canonical_root) and is_binary(canonical_workspace_root) do
-    workspace_prefix = canonical_workspace_root <> "/"
-
-    cond do
-      canonical_root == canonical_workspace_root ->
-        :ok
-
-      String.starts_with?(canonical_root <> "/", workspace_prefix) ->
-        :ok
-
-      true ->
-        writable_root_outside_workspace_error(canonical_root, canonical_workspace_root)
-    end
-  end
-
-  defp writable_root_outside_workspace_error(canonical_root, canonical_workspace_root)
-       when is_binary(canonical_root) and is_binary(canonical_workspace_root) do
-    reason = {:writable_root_outside_workspace, canonical_root, canonical_workspace_root}
-
-    {:error, {:unsafe_turn_sandbox_policy, reason}}
   end
 
   defp format_errors(changeset) do
