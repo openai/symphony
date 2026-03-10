@@ -350,6 +350,84 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "missing running issues stop active agents without cleaning the workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-missing-running-reconcile-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-missing"
+    issue_identifier = "MT-557"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress", "In Review"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
+        poll_interval_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+      orchestrator_name = Module.concat(__MODULE__, :MissingRunningIssueOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      Process.sleep(50)
+
+      assert {:ok, workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join(test_root, issue_identifier))
+
+      File.mkdir_p!(workspace)
+
+      agent_pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: agent_pid,
+        ref: nil,
+        identifier: issue_identifier,
+        issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, :tick)
+      Process.sleep(100)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.running, issue_id)
+      refute MapSet.member?(state.claimed, issue_id)
+      refute Process.alive?(agent_pid)
+      assert File.exists?(workspace)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
 
@@ -631,6 +709,9 @@ defmodule SymphonyElixir.CoreTest do
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
   end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   test "fetch issues by states with empty state set is a no-op" do
     assert {:ok, []} = Client.fetch_issues_by_states([])
@@ -1338,6 +1419,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Fix workspace start args", issue)
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
 
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
@@ -1365,7 +1447,7 @@ defmodule SymphonyElixir.CoreTest do
                    payload["method"] == "thread/start" &&
                      get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
                      get_in(payload, ["params", "sandbox"]) == "workspace-write" &&
-                     get_in(payload, ["params", "cwd"]) == Path.expand(workspace)
+                     get_in(payload, ["params", "cwd"]) == canonical_workspace
                  end)
                else
                  false
@@ -1374,7 +1456,7 @@ defmodule SymphonyElixir.CoreTest do
 
       expected_turn_sandbox_policy = %{
         "type" => "workspaceWrite",
-        "writableRoots" => [Path.expand(workspace)],
+        "writableRoots" => [canonical_workspace],
         "readOnlyAccess" => %{"type" => "fullAccess"},
         "networkAccess" => false,
         "excludeTmpdirEnvVar" => false,
@@ -1396,7 +1478,7 @@ defmodule SymphonyElixir.CoreTest do
                    }
 
                    payload["method"] == "turn/start" &&
-                     get_in(payload, ["params", "cwd"]) == Path.expand(workspace) &&
+                     get_in(payload, ["params", "cwd"]) == canonical_workspace &&
                      get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
                      get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_sandbox_policy
                  end)
@@ -1551,6 +1633,9 @@ defmodule SymphonyElixir.CoreTest do
 
       File.chmod!(codex_binary, 0o755)
 
+      workspace_cache = Path.join(Path.expand(workspace), ".cache")
+      File.mkdir_p!(workspace_cache)
+
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         codex_command: "#{codex_binary} app-server",
@@ -1558,7 +1643,7 @@ defmodule SymphonyElixir.CoreTest do
         codex_thread_sandbox: "workspace-write",
         codex_turn_sandbox_policy: %{
           type: "workspaceWrite",
-          writableRoots: [Path.expand(workspace), Path.join(Path.expand(workspace_root), ".cache")]
+          writableRoots: [Path.expand(workspace), workspace_cache]
         }
       )
 
@@ -1573,6 +1658,8 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Fix workspace start args", issue)
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
+      assert {:ok, canonical_workspace_cache} = SymphonyElixir.PathSafety.canonicalize(workspace_cache)
 
       lines = File.read!(trace_file) |> String.split("\n", trim: true)
 
@@ -1592,8 +1679,12 @@ defmodule SymphonyElixir.CoreTest do
              end)
 
       expected_turn_policy = %{
+        "excludeSlashTmp" => false,
+        "excludeTmpdirEnvVar" => false,
+        "networkAccess" => false,
+        "readOnlyAccess" => %{"type" => "fullAccess"},
         "type" => "workspaceWrite",
-        "writableRoots" => [Path.expand(workspace), Path.join(Path.expand(workspace_root), ".cache")]
+        "writableRoots" => [canonical_workspace, canonical_workspace_cache]
       }
 
       assert Enum.any?(lines, fn line ->

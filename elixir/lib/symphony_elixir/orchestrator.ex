@@ -258,12 +258,13 @@ defmodule SymphonyElixir.Orchestrator do
     else
       case Tracker.fetch_issue_states_by_ids(running_ids) do
         {:ok, issues} ->
-          reconcile_running_issue_states(
-            issues,
+          issues
+          |> reconcile_running_issue_states(
             state,
             active_state_set(),
             terminal_state_set()
           )
+          |> reconcile_missing_running_issue_ids(running_ids, issues)
 
         {:error, reason} ->
           Logger.debug("Failed to refresh running issue states: #{inspect(reason)}; keeping active workers")
@@ -337,6 +338,44 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp reconcile_missing_running_issue_ids(%State{} = state, requested_issue_ids, issues)
+       when is_list(requested_issue_ids) and is_list(issues) do
+    visible_issue_ids =
+      issues
+      |> Enum.flat_map(fn
+        %Issue{id: issue_id} when is_binary(issue_id) -> [issue_id]
+        _ -> []
+      end)
+      |> MapSet.new()
+
+    Enum.reduce(requested_issue_ids, state, fn issue_id, state_acc ->
+      if MapSet.member?(visible_issue_ids, issue_id) do
+        state_acc
+      else
+        log_missing_running_issue(state_acc, issue_id)
+        terminate_running_issue(state_acc, issue_id, false)
+      end
+    end)
+  end
+
+  defp reconcile_missing_running_issue_ids(state, _requested_issue_ids, _issues), do: state
+
+  defp log_missing_running_issue(%State{} = state, issue_id) when is_binary(issue_id) do
+    case Map.get(state.running, issue_id) do
+      %{identifier: identifier} ->
+        Logger.info(
+          "Issue no longer visible during running-state refresh: issue_id=#{issue_id} issue_identifier=#{identifier}; stopping active agent"
+        )
+
+      _ ->
+        Logger.info(
+          "Issue no longer visible during running-state refresh: issue_id=#{issue_id}; stopping active agent"
+        )
+    end
+  end
+
+  defp log_missing_running_issue(_state, _issue_id), do: :ok
 
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
