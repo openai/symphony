@@ -144,7 +144,9 @@ codex:
   command: "$CODEX_BIN app-server --model gpt-5.3-codex"
 ```
 
-- If `WORKFLOW.md` is missing or has invalid YAML, startup and scheduling are halted until fixed.
+- If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
+- If a later reload fails, Symphony keeps running with the last known good workflow and logs the
+  reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 

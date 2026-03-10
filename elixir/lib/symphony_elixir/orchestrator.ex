@@ -74,6 +74,7 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
       when is_reference(tick_token) do
     state = refresh_runtime_config(state)
+
     state = %{
       state
       | poll_check_in_progress: true,
@@ -91,6 +92,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:tick, state) do
     state = refresh_runtime_config(state)
+
     state = %{
       state
       | poll_check_in_progress: true,
@@ -364,14 +366,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp log_missing_running_issue(%State{} = state, issue_id) when is_binary(issue_id) do
     case Map.get(state.running, issue_id) do
       %{identifier: identifier} ->
-        Logger.info(
-          "Issue no longer visible during running-state refresh: issue_id=#{issue_id} issue_identifier=#{identifier}; stopping active agent"
-        )
+        Logger.info("Issue no longer visible during running-state refresh: issue_id=#{issue_id} issue_identifier=#{identifier}; stopping active agent")
 
       _ ->
-        Logger.info(
-          "Issue no longer visible during running-state refresh: issue_id=#{issue_id}; stopping active agent"
-        )
+        Logger.info("Issue no longer visible during running-state refresh: issue_id=#{issue_id}; stopping active agent")
     end
   end
 

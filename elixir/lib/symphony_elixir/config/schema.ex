@@ -552,9 +552,7 @@ defmodule SymphonyElixir.Config.Schema do
             {:ok, canonical_root}
 
           true ->
-            {:error,
-             {:unsafe_turn_sandbox_policy,
-              {:writable_root_outside_workspace, canonical_root, canonical_workspace_root}}}
+            {:error, {:unsafe_turn_sandbox_policy, {:writable_root_outside_workspace, canonical_root, canonical_workspace_root}}}
         end
       end
     end
