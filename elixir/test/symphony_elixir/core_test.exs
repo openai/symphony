@@ -555,6 +555,46 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 9_000, 10_500)
   end
 
+  test "stale retry timer messages do not consume newer retry entries" do
+    issue_id = "issue-stale-retry"
+    orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    current_retry_token = make_ref()
+    stale_retry_token = make_ref()
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:retry_attempts, %{
+        issue_id => %{
+          attempt: 2,
+          timer_ref: nil,
+          retry_token: current_retry_token,
+          due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+          identifier: "MT-561",
+          error: "agent exited: :boom"
+        }
+      })
+    end)
+
+    send(pid, {:retry_issue, issue_id, stale_retry_token})
+    Process.sleep(50)
+
+    assert %{
+             attempt: 2,
+             retry_token: ^current_retry_token,
+             identifier: "MT-561",
+             error: "agent exited: :boom"
+           } = :sys.get_state(pid).retry_attempts[issue_id]
+  end
+
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 
