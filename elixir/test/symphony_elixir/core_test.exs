@@ -595,6 +595,36 @@ defmodule SymphonyElixir.CoreTest do
            } = :sys.get_state(pid).retry_attempts[issue_id]
   end
 
+  test "manual refresh coalesces repeated requests and ignores superseded ticks" do
+    now_ms = System.monotonic_time(:millisecond)
+    stale_tick_token = make_ref()
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: now_ms + 30_000,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: stale_tick_token,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil
+    }
+
+    assert {:reply, %{queued: true, coalesced: false}, refreshed_state} =
+             Orchestrator.handle_call(:request_refresh, {self(), make_ref()}, state)
+
+    assert is_reference(refreshed_state.tick_timer_ref)
+    assert is_reference(refreshed_state.tick_token)
+    refute refreshed_state.tick_token == stale_tick_token
+    assert refreshed_state.next_poll_due_at_ms <= System.monotonic_time(:millisecond)
+
+    assert {:reply, %{queued: true, coalesced: true}, coalesced_state} =
+             Orchestrator.handle_call(:request_refresh, {self(), make_ref()}, refreshed_state)
+
+    assert coalesced_state.tick_token == refreshed_state.tick_token
+    assert {:noreply, ^coalesced_state} = Orchestrator.handle_info({:tick, stale_tick_token}, coalesced_state)
+  end
+
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 
