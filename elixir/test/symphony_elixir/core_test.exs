@@ -1658,8 +1658,6 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Fix workspace start args", issue)
-      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
-      assert {:ok, canonical_workspace_cache} = SymphonyElixir.PathSafety.canonicalize(workspace_cache)
 
       lines = File.read!(trace_file) |> String.split("\n", trim: true)
 
@@ -1679,12 +1677,8 @@ defmodule SymphonyElixir.CoreTest do
              end)
 
       expected_turn_policy = %{
-        "excludeSlashTmp" => false,
-        "excludeTmpdirEnvVar" => false,
-        "networkAccess" => false,
-        "readOnlyAccess" => %{"type" => "fullAccess"},
         "type" => "workspaceWrite",
-        "writableRoots" => [canonical_workspace, canonical_workspace_cache]
+        "writableRoots" => [Path.expand(workspace), workspace_cache]
       }
 
       assert Enum.any?(lines, fn line ->

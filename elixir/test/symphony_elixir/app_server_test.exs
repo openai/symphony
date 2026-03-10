@@ -76,6 +76,113 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server passes explicit turn sandbox policies through unchanged" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-supported-turn-policies-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1001")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-supported-turn-policies.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-supported-turn-policies.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1001"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1001"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      issue = %Issue{
+        id: "issue-supported-turn-policies",
+        identifier: "MT-1001",
+        title: "Validate explicit turn sandbox policy passthrough",
+        description: "Ensure runtime startup forwards configured turn sandbox policies unchanged",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1001",
+        labels: ["backend"]
+      }
+
+      policy_cases = [
+        %{"type" => "dangerFullAccess"},
+        %{"type" => "externalSandbox", "profile" => "remote-ci"},
+        %{"type" => "workspaceWrite", "writableRoots" => ["relative/path"], "networkAccess" => true},
+        %{"type" => "futureSandbox", "nested" => %{"flag" => true}}
+      ]
+
+      Enum.each(policy_cases, fn configured_policy ->
+        File.rm(trace_file)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          codex_command: "#{codex_binary} app-server",
+          codex_turn_sandbox_policy: configured_policy
+        )
+
+        assert {:ok, _result} = AppServer.run(workspace, "Validate supported turn policy", issue)
+
+        trace = File.read!(trace_file)
+        lines = String.split(trace, "\n", trim: true)
+
+        assert Enum.any?(lines, fn line ->
+                 if String.starts_with?(line, "JSON:") do
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+                   |> then(fn payload ->
+                     payload["method"] == "turn/start" &&
+                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy
+                   end)
+                 else
+                   false
+                 end
+               end)
+      end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(

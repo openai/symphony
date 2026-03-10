@@ -283,11 +283,13 @@ defmodule SymphonyElixir.Config.Schema do
   @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) ::
           {:ok, map()} | {:error, term()}
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil) do
-    workspace_root = workspace || settings.workspace.root
+    case settings.codex.turn_sandbox_policy do
+      %{} = policy ->
+        {:ok, policy}
 
-    settings
-    |> resolve_turn_sandbox_policy(workspace_root)
-    |> validate_runtime_turn_sandbox_policy(workspace_root)
+      _ ->
+        default_runtime_turn_sandbox_policy(workspace || settings.workspace.root)
+    end
   end
 
   @spec normalize_issue_state(String.t()) :: String.t()
@@ -469,89 +471,14 @@ defmodule SymphonyElixir.Config.Schema do
     }
   end
 
-  defp validate_runtime_turn_sandbox_policy(policy, workspace_root)
-       when is_map(policy) and is_binary(workspace_root) do
-    with {:ok, _canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
-      case Map.get(policy, "type") do
-        "workspaceWrite" ->
-          validate_workspace_write_policy(policy)
-
-        "readOnly" ->
-          validate_read_only_policy(policy)
-
-        other ->
-          {:error, {:unsafe_turn_sandbox_policy, {:unsupported_type, other}}}
-      end
+  defp default_runtime_turn_sandbox_policy(workspace_root) when is_binary(workspace_root) do
+    with {:ok, canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
+      {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
     end
   end
 
-  defp validate_runtime_turn_sandbox_policy(_policy, workspace_root) do
+  defp default_runtime_turn_sandbox_policy(workspace_root) do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
-  end
-
-  defp validate_workspace_write_policy(policy) do
-    with :ok <- validate_network_access_disabled(policy),
-         {:ok, writable_roots} <- validate_writable_roots(Map.get(policy, "writableRoots")) do
-      {:ok,
-       policy
-       |> Map.put("type", "workspaceWrite")
-       |> Map.put("writableRoots", writable_roots)
-       |> Map.put_new("readOnlyAccess", %{"type" => "fullAccess"})
-       |> Map.put_new("networkAccess", false)
-       |> Map.put_new("excludeTmpdirEnvVar", false)
-       |> Map.put_new("excludeSlashTmp", false)}
-    end
-  end
-
-  defp validate_read_only_policy(policy) do
-    with :ok <- validate_network_access_disabled(policy) do
-      {:ok, Map.put(policy, "type", "readOnly")}
-    end
-  end
-
-  defp validate_network_access_disabled(policy) do
-    if Map.get(policy, "networkAccess") == true do
-      {:error, {:unsafe_turn_sandbox_policy, :network_access_enabled}}
-    else
-      :ok
-    end
-  end
-
-  defp validate_writable_roots(writable_roots) when is_list(writable_roots) and writable_roots != [] do
-    writable_roots
-    |> Enum.reduce_while({:ok, []}, fn root, {:ok, acc} ->
-      case validate_writable_root(root) do
-        {:ok, canonical_root} -> {:cont, {:ok, [canonical_root | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, canonical_roots} -> {:ok, Enum.reverse(canonical_roots)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp validate_writable_roots(_writable_roots) do
-    {:error, {:unsafe_turn_sandbox_policy, :missing_writable_roots}}
-  end
-
-  defp validate_writable_root(root) when is_binary(root) do
-    case validate_absolute_writable_root(root) do
-      :ok -> PathSafety.canonicalize(root)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp validate_writable_root(root) do
-    {:error, {:unsafe_turn_sandbox_policy, {:invalid_writable_root, root}}}
-  end
-
-  defp validate_absolute_writable_root(root) when is_binary(root) do
-    if Path.type(root) == :absolute do
-      :ok
-    else
-      {:error, {:unsafe_turn_sandbox_policy, {:relative_writable_root, root}}}
-    end
   end
 
   defp format_errors(changeset) do
