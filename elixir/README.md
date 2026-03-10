@@ -173,6 +173,25 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
+Run the real external end-to-end test only when you want Symphony to create disposable Linear
+resources and launch a real `codex app-server` session:
+
+```bash
+cd elixir
+export LINEAR_API_KEY=...
+make e2e
+```
+
+Optional environment variables:
+
+- `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
+- `SYMPHONY_LIVE_CODEX_COMMAND` defaults to `codex app-server`
+
+The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`,
+runs a real agent turn, verifies the workspace side effect, requires Codex to comment on and close
+the Linear issue, then marks the project completed so the run remains visible in Linear.
+`make e2e` fails fast with a clear error if `LINEAR_API_KEY` is unset.
+
 ## FAQ
 
 ### Why Elixir?
