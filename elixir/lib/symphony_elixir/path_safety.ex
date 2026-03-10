@@ -16,10 +16,8 @@ defmodule SymphonyElixir.PathSafety do
   end
 
   defp split_absolute_path(path) when is_binary(path) do
-    case Path.split(path) do
-      [root | segments] -> {root, segments}
-      [] -> {"/", []}
-    end
+    [root | segments] = Path.split(path)
+    {root, segments}
   end
 
   defp resolve_segments(root, resolved_segments, []), do: {:ok, join_path(root, resolved_segments)}
