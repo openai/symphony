@@ -106,8 +106,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(stale_workspace)
       assert {:ok, workspace} = Workspace.create_for_issue("MT-STALE")
-      assert workspace == stale_workspace
+      assert workspace == canonical_workspace
       assert File.dir?(workspace)
     after
       File.rm_rf(workspace_root)
@@ -132,8 +133,38 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-      assert {:error, {:workspace_symlink_escape, ^symlink_path, ^workspace_root}} =
+      assert {:ok, canonical_outside_root} = SymphonyElixir.PathSafety.canonicalize(outside_root)
+      assert {:ok, canonical_workspace_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
+
+      assert {:error, {:workspace_outside_root, ^canonical_outside_root, ^canonical_workspace_root}} =
                Workspace.create_for_issue("MT-SYM")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-root-symlink-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      actual_root = Path.join(test_root, "actual-workspaces")
+      linked_root = Path.join(test_root, "linked-workspaces")
+
+      File.mkdir_p!(actual_root)
+      File.ln_s!(actual_root, linked_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: linked_root)
+
+      assert {:ok, canonical_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join(actual_root, "MT-LINK"))
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-LINK")
+      assert workspace == canonical_workspace
+      assert File.dir?(workspace)
     after
       File.rm_rf(test_root)
     end
@@ -150,7 +181,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       File.mkdir_p!(workspace_root)
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-      assert {:error, {:workspace_equals_root, ^workspace_root, ^workspace_root}, ""} =
+      assert {:ok, canonical_workspace_root} =
+               SymphonyElixir.PathSafety.canonicalize(workspace_root)
+
+      assert {:error, {:workspace_equals_root, ^canonical_workspace_root, ^canonical_workspace_root}, ""} =
                Workspace.remove(workspace_root)
     after
       File.rm_rf(workspace_root)
@@ -209,8 +243,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
       workspace = Path.join(workspace_root, "MT-608")
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
 
-      assert {:ok, ^workspace} = Workspace.create_for_issue("MT-608")
+      assert {:ok, ^canonical_workspace} = Workspace.create_for_issue("MT-608")
       assert File.dir?(workspace)
       assert {:ok, []} = File.ls(workspace)
     after
@@ -677,9 +712,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert config.codex.thread_sandbox == "workspace-write"
 
+    assert {:ok, canonical_default_workspace_root} =
+             SymphonyElixir.PathSafety.canonicalize(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+
     assert Config.codex_turn_sandbox_policy() == %{
              "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
+             "writableRoots" => [canonical_default_workspace_root],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,
@@ -693,19 +731,45 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
     assert Config.settings!().codex.command == "codex app-server --model gpt-5.3-codex"
 
+    explicit_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-explicit-sandbox-root-#{System.unique_integer([:positive])}"
+      )
+
+    explicit_workspace = Path.join(explicit_root, "MT-EXPLICIT")
+    explicit_cache = Path.join(explicit_workspace, "cache")
+    File.mkdir_p!(explicit_cache)
+
+    on_exit(fn -> File.rm_rf(explicit_root) end)
+
     write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: explicit_root,
       codex_approval_policy: "on-request",
       codex_thread_sandbox: "workspace-write",
-      codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["/tmp/workspace", "/tmp/cache"]}
+      codex_turn_sandbox_policy: %{
+        type: "workspaceWrite",
+        writableRoots: [explicit_workspace, explicit_cache]
+      }
     )
 
     config = Config.settings!()
     assert config.codex.approval_policy == "on-request"
     assert config.codex.thread_sandbox == "workspace-write"
 
-    assert Config.codex_turn_sandbox_policy() == %{
+    assert {:ok, canonical_explicit_workspace} =
+             SymphonyElixir.PathSafety.canonicalize(explicit_workspace)
+
+    assert {:ok, canonical_explicit_cache} =
+             SymphonyElixir.PathSafety.canonicalize(explicit_cache)
+
+    assert Config.codex_turn_sandbox_policy(explicit_workspace) == %{
              "type" => "workspaceWrite",
-             "writableRoots" => ["/tmp/workspace", "/tmp/cache"]
+             "writableRoots" => [canonical_explicit_workspace, canonical_explicit_cache],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
            }
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
@@ -770,12 +834,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.approval_policy == "future-policy"
     assert config.codex.thread_sandbox == "future-sandbox"
 
-    assert Config.codex_turn_sandbox_policy() == %{
-             "type" => "futureSandbox",
-             "nested" => %{"flag" => true}
-           }
-
     assert :ok = Config.validate!()
+
+    assert_raise ArgumentError, ~r/Invalid codex turn sandbox policy/, fn ->
+      Config.codex_turn_sandbox_policy()
+    end
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
     assert Config.settings!().codex.command == "codex app-server"
@@ -974,6 +1037,58 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "excludeTmpdirEnvVar" => false,
              "excludeSlashTmp" => false
            }
+  end
+
+  test "runtime sandbox policy resolution rejects unsafe custom policies" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-runtime-sandbox-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      issue_workspace = Path.join(workspace_root, "MT-100")
+      cache_root = Path.join(issue_workspace, "cache")
+
+      File.mkdir_p!(cache_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [workspace_root]
+        }
+      )
+
+      assert {:error, {:unsafe_turn_sandbox_policy, {:writable_root_outside_workspace, _, _}}} =
+               Config.codex_runtime_settings(issue_workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: ["relative/path"]
+        }
+      )
+
+      assert {:error, {:unsafe_turn_sandbox_policy, {:relative_writable_root, "relative/path"}}} =
+               Config.codex_runtime_settings(issue_workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [issue_workspace, cache_root],
+          networkAccess: true
+        }
+      )
+
+      assert {:error, {:unsafe_turn_sandbox_policy, :network_access_enabled}} =
+               Config.codex_runtime_settings(issue_workspace)
+    after
+      File.rm_rf(test_root)
+    end
   end
 
   test "workflow prompt is used when building base prompt" do
