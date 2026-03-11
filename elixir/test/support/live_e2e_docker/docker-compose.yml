@@ -1,0 +1,20 @@
+services:
+  worker1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${SYMPHONY_LIVE_DOCKER_WORKER_1_PORT}:22"
+    volumes:
+      - ${SYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY}:/run/symphony/ssh/authorized_key.pub:ro
+      - ${SYMPHONY_LIVE_DOCKER_AUTH_JSON}:/root/.codex/auth.json:ro
+
+  worker2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${SYMPHONY_LIVE_DOCKER_WORKER_2_PORT}:22"
+    volumes:
+      - ${SYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY}:/run/symphony/ssh/authorized_key.pub:ro
+      - ${SYMPHONY_LIVE_DOCKER_AUTH_JSON}:/root/.codex/auth.json:ro

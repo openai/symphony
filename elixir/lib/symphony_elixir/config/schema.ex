@@ -100,6 +100,23 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Worker do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:ssh_hosts, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:ssh_hosts], empty_values: [])
+    end
+  end
+
   defmodule Agent do
     @moduledoc false
     use Ecto.Schema
@@ -246,6 +263,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
@@ -280,15 +298,15 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) ::
+  @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil, keyword()) ::
           {:ok, map()} | {:error, term()}
-  def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil) do
+  def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
         {:ok, policy}
 
       _ ->
-        default_runtime_turn_sandbox_policy(workspace || settings.workspace.root)
+        default_runtime_turn_sandbox_policy(workspace || settings.workspace.root, opts)
     end
   end
 
@@ -332,6 +350,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
+    |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
@@ -471,13 +490,17 @@ defmodule SymphonyElixir.Config.Schema do
     }
   end
 
-  defp default_runtime_turn_sandbox_policy(workspace_root) when is_binary(workspace_root) do
-    with {:ok, canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
-      {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
+  defp default_runtime_turn_sandbox_policy(workspace_root, opts) when is_binary(workspace_root) do
+    if Keyword.get(opts, :remote, false) do
+      {:ok, default_turn_sandbox_policy(workspace_root)}
+    else
+      with {:ok, canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
+        {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
+      end
     end
   end
 
-  defp default_runtime_turn_sandbox_policy(workspace_root) do
+  defp default_runtime_turn_sandbox_policy(workspace_root, _opts) do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
   end
 

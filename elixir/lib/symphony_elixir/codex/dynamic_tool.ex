@@ -118,24 +118,21 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         _ -> true
       end
 
-    %{
-      "success" => success,
-      "contentItems" => [
-        %{
-          "type" => "inputText",
-          "text" => encode_payload(response)
-        }
-      ]
-    }
+    dynamic_tool_response(success, encode_payload(response))
   end
 
   defp failure_response(payload) do
+    dynamic_tool_response(false, encode_payload(payload))
+  end
+
+  defp dynamic_tool_response(success, output) when is_boolean(success) and is_binary(output) do
     %{
-      "success" => false,
+      "success" => success,
+      "output" => output,
       "contentItems" => [
         %{
           "type" => "inputText",
-          "text" => encode_payload(payload)
+          "text" => output
         }
       ]
     }
