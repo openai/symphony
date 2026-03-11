@@ -937,7 +937,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     config = Config.settings!()
     assert config.tracker.api_key == "env:#{api_key_env_var}"
-    assert config.workspace.root == Path.expand("env:#{workspace_env_var}")
+    assert config.workspace.root == "env:#{workspace_env_var}"
   end
 
   test "config supports per-state max concurrent agent overrides" do
@@ -1030,7 +1030,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              })
 
     assert settings.tracker.api_key == nil
-    assert settings.workspace.root == Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+    assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
 
     assert settings.codex.approval_policy == %{
              "reject" => %{"sandbox_approval" => true}
@@ -1043,7 +1043,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              })
 
     assert settings.tracker.api_key == "fallback-linear-token"
-    assert settings.workspace.root == Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+    assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
   end
 
   test "schema resolves sandbox policies from explicit and default workspaces" do
@@ -1075,6 +1075,37 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            ) == %{
              "type" => "workspaceWrite",
              "writableRoots" => [Path.expand("/tmp/workspace")],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
+           }
+  end
+
+  test "schema keeps workspace roots raw while sandbox helpers expand only for local use" do
+    assert {:ok, settings} =
+             Schema.parse(%{
+               workspace: %{root: "~/.symphony-workspaces"},
+               codex: %{}
+             })
+
+    assert settings.workspace.root == "~/.symphony-workspaces"
+
+    assert Schema.resolve_turn_sandbox_policy(settings) == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => [Path.expand("~/.symphony-workspaces")],
+             "readOnlyAccess" => %{"type" => "fullAccess"},
+             "networkAccess" => false,
+             "excludeTmpdirEnvVar" => false,
+             "excludeSlashTmp" => false
+           }
+
+    assert {:ok, remote_policy} =
+             Schema.resolve_runtime_turn_sandbox_policy(settings, nil, remote: true)
+
+    assert remote_policy == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => ["~/.symphony-workspaces"],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,
@@ -1163,6 +1194,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert default_policy["type"] == "workspaceWrite"
       assert default_policy["writableRoots"] == [canonical_workspace_root]
 
+      assert {:ok, blank_workspace_policy} =
+               Schema.resolve_runtime_turn_sandbox_policy(settings, "")
+
+      assert blank_workspace_policy == default_policy
+
       read_only_settings = %{
         settings
         | codex: %{settings.codex | turn_sandbox_policy: %{"type" => "readOnly", "networkAccess" => true}}
@@ -1211,8 +1247,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       trace_file = Path.join(test_root, "ssh.trace")
       fake_ssh = Path.join(test_root, "ssh")
-      workspace_root = "/remote/workspaces"
-      workspace_path = Path.join(workspace_root, "MT-SSH-WS")
+      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/MT-SSH-WS"
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
@@ -1243,6 +1279,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
       assert Config.settings!().worker.ssh_hosts == ["worker-01:2200"]
+      assert Config.settings!().workspace.root == workspace_root
       assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-WS", "worker-01:2200")
       assert :ok = Workspace.run_before_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
       assert :ok = Workspace.run_after_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
@@ -1251,6 +1288,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       trace = File.read!(trace_file)
       assert trace =~ "-p 2200 worker-01 bash -lc"
       assert trace =~ "__SYMPHONY_WORKSPACE__"
+      assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
+      assert trace =~ "${workspace#~/}"
       assert trace =~ "echo before-run"
       assert trace =~ "echo after-run"
       assert trace =~ "echo before-remove"

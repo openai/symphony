@@ -296,7 +296,10 @@ defmodule SymphonyElixir.Config.Schema do
         policy
 
       _ ->
-        default_turn_sandbox_policy(workspace || settings.workspace.root)
+        workspace
+        |> default_workspace_root(settings.workspace.root)
+        |> expand_local_workspace_root()
+        |> default_turn_sandbox_policy()
     end
   end
 
@@ -308,7 +311,9 @@ defmodule SymphonyElixir.Config.Schema do
         {:ok, policy}
 
       _ ->
-        default_runtime_turn_sandbox_policy(workspace || settings.workspace.root, opts)
+        workspace
+        |> default_workspace_root(settings.workspace.root)
+        |> default_runtime_turn_sandbox_policy(opts)
     end
   end
 
@@ -420,13 +425,13 @@ defmodule SymphonyElixir.Config.Schema do
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do
       :missing ->
-        Path.expand(default)
+        default
 
       "" ->
-        Path.expand(default)
+        default
 
       path ->
-        Path.expand(path)
+        path
     end
   end
 
@@ -475,16 +480,9 @@ defmodule SymphonyElixir.Config.Schema do
   defp normalize_secret_value(_value), do: nil
 
   defp default_turn_sandbox_policy(workspace) do
-    writable_root =
-      if is_binary(workspace) and workspace != "" do
-        Path.expand(workspace)
-      else
-        Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
-      end
-
     %{
       "type" => "workspaceWrite",
-      "writableRoots" => [writable_root],
+      "writableRoots" => [workspace],
       "readOnlyAccess" => %{"type" => "fullAccess"},
       "networkAccess" => false,
       "excludeTmpdirEnvVar" => false,
@@ -496,7 +494,8 @@ defmodule SymphonyElixir.Config.Schema do
     if Keyword.get(opts, :remote, false) do
       {:ok, default_turn_sandbox_policy(workspace_root)}
     else
-      with {:ok, canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
+      with expanded_workspace_root <- expand_local_workspace_root(workspace_root),
+           {:ok, canonical_workspace_root} <- PathSafety.canonicalize(expanded_workspace_root) do
         {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
       end
     end
@@ -504,6 +503,22 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp default_runtime_turn_sandbox_policy(workspace_root, _opts) do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
+  end
+
+  defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
+    do: workspace
+
+  defp default_workspace_root(nil, fallback), do: fallback
+  defp default_workspace_root("", fallback), do: fallback
+  defp default_workspace_root(workspace, _fallback), do: workspace
+
+  defp expand_local_workspace_root(workspace_root)
+       when is_binary(workspace_root) and workspace_root != "" do
+    Path.expand(workspace_root)
+  end
+
+  defp expand_local_workspace_root(_workspace_root) do
+    Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
   end
 
   defp format_errors(changeset) do

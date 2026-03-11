@@ -49,17 +49,18 @@ defmodule SymphonyElixir.Workspace do
     script =
       [
         "set -eu",
-        "if [ -d #{shell_escape(workspace)} ]; then",
+        remote_shell_assign("workspace", workspace),
+        "if [ -d \"$workspace\" ]; then",
         "  created=0",
-        "elif [ -e #{shell_escape(workspace)} ]; then",
-        "  rm -rf #{shell_escape(workspace)}",
-        "  mkdir -p #{shell_escape(workspace)}",
+        "elif [ -e \"$workspace\" ]; then",
+        "  rm -rf \"$workspace\"",
+        "  mkdir -p \"$workspace\"",
         "  created=1",
         "else",
-        "  mkdir -p #{shell_escape(workspace)}",
+        "  mkdir -p \"$workspace\"",
         "  created=1",
         "fi",
-        "cd #{shell_escape(workspace)}",
+        "cd \"$workspace\"",
         "printf '%s\\t%s\\t%s\\n' '#{@remote_workspace_marker}' \"$created\" \"$(pwd -P)\""
       ]
       |> Enum.reject(&(&1 == ""))
@@ -107,7 +108,14 @@ defmodule SymphonyElixir.Workspace do
   def remove(workspace, worker_host) when is_binary(worker_host) do
     maybe_run_before_remove_hook(workspace, worker_host)
 
-    case run_remote_command(worker_host, "rm -rf #{shell_escape(workspace)}", Config.settings!().hooks.timeout_ms) do
+    script =
+      [
+        remote_shell_assign("workspace", workspace),
+        "rm -rf \"$workspace\""
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
       {:ok, {_output, 0}} ->
         {:ok, []}
 
@@ -252,8 +260,9 @@ defmodule SymphonyElixir.Workspace do
       command ->
         script =
           [
-            "if [ -d #{shell_escape(workspace)} ]; then",
-            "  cd #{shell_escape(workspace)}",
+            remote_shell_assign("workspace", workspace),
+            "if [ -d \"$workspace\" ]; then",
+            "  cd \"$workspace\"",
             "  #{command}",
             "fi"
           ]
@@ -386,6 +395,18 @@ defmodule SymphonyElixir.Workspace do
       true ->
         :ok
     end
+  end
+
+  defp remote_shell_assign(variable_name, raw_path)
+       when is_binary(variable_name) and is_binary(raw_path) do
+    [
+      "#{variable_name}=#{shell_escape(raw_path)}",
+      "case \"$#{variable_name}\" in",
+      "  '~') #{variable_name}=\"$HOME\" ;;",
+      "  '~/'*) " <> variable_name <> "=\"$HOME/${" <> variable_name <> "#~/}\" ;;",
+      "esac"
+    ]
+    |> Enum.join("\n")
   end
 
   defp parse_remote_workspace_output(output) do

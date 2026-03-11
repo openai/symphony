@@ -555,12 +555,13 @@ defmodule SymphonyElixir.LiveE2ETest do
   defp live_ssh_worker_setup!(run_id) when is_binary(run_id) do
     ssh_worker_hosts = live_ssh_worker_hosts()
     remote_test_root = Path.join(shared_remote_home!(ssh_worker_hosts), ".#{run_id}")
+    remote_workspace_root = "~/.#{run_id}/workspaces"
 
     %{
       cleanup: fn -> cleanup_remote_test_root(remote_test_root, ssh_worker_hosts) end,
       codex_command: "codex app-server",
       ssh_worker_hosts: ssh_worker_hosts,
-      workspace_root: Path.join(remote_test_root, "workspaces")
+      workspace_root: remote_workspace_root
     }
   end
 
@@ -589,6 +590,7 @@ defmodule SymphonyElixir.LiveE2ETest do
         docker_compose_up!(project_name, docker_compose_env(worker_ports, auth_json_path, key_path <> ".pub"))
         wait_for_ssh_hosts!(worker_hosts)
         remote_test_root = Path.join(shared_remote_home!(worker_hosts), ".#{run_id}")
+        remote_workspace_root = "~/.#{run_id}/workspaces"
 
         %{
           cleanup: fn ->
@@ -597,7 +599,7 @@ defmodule SymphonyElixir.LiveE2ETest do
           end,
           codex_command: "codex app-server",
           ssh_worker_hosts: worker_hosts,
-          workspace_root: Path.join(remote_test_root, "workspaces")
+          workspace_root: remote_workspace_root
         }
       rescue
         error ->
