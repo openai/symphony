@@ -767,6 +767,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{
         state
         | poll_interval_ms: 30_000,
+          tick_timer_ref: nil,
+          tick_token: make_ref(),
           next_poll_due_at_ms: now_ms + 4_000,
           poll_check_in_progress: false
       }

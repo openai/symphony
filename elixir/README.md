@@ -185,12 +185,23 @@ make e2e
 Optional environment variables:
 
 - `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
-- `SYMPHONY_LIVE_CODEX_COMMAND` defaults to `codex app-server`
+- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
 
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`,
-runs a real agent turn, verifies the workspace side effect, requires Codex to comment on and close
-the Linear issue, then marks the project completed so the run remains visible in Linear.
-`make e2e` fails fast with a clear error if `LINEAR_API_KEY` is unset.
+`make e2e` runs two live scenarios:
+- one with a local worker
+- one with SSH workers
+
+If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
+disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair,
+mounts the host `~/.codex/auth.json` into each worker, verifies that Symphony can talk to them
+over real SSH, then runs the same orchestration flow against those worker addresses. This keeps
+the transport representative without depending on long-lived external machines.
+
+Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
+
+The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
+a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
+Linear issue, then marks the project completed so the run remains visible in Linear.
 
 ## FAQ
 
