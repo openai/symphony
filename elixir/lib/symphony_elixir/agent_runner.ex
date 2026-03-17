@@ -11,12 +11,12 @@ defmodule SymphonyElixir.AgentRunner do
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
-    worker_hosts =
-      candidate_worker_hosts(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
+    # The orchestrator owns host retries so one worker lifetime never hops machines.
+    worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
 
-    Logger.info("Starting agent run for #{issue_context(issue)} worker_hosts=#{inspect(worker_hosts_for_log(worker_hosts))}")
+    Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case run_on_worker_hosts(issue, codex_update_recipient, opts, worker_hosts) do
+    case run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
       :ok ->
         :ok
 
@@ -25,22 +25,6 @@ defmodule SymphonyElixir.AgentRunner do
         raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
     end
   end
-
-  defp run_on_worker_hosts(issue, codex_update_recipient, opts, [worker_host | rest]) do
-    case run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
-      :ok ->
-        :ok
-
-      {:error, reason} when rest != [] ->
-        Logger.warning("Agent run failed for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)} reason=#{inspect(reason)}; trying next worker host")
-        run_on_worker_hosts(issue, codex_update_recipient, opts, rest)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp run_on_worker_hosts(_issue, _codex_update_recipient, _opts, []), do: {:error, :no_worker_hosts_available}
 
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
@@ -188,9 +172,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp active_issue_state?(_state_name), do: false
 
-  defp candidate_worker_hosts(nil, []), do: [nil]
+  defp selected_worker_host(nil, []), do: nil
 
-  defp candidate_worker_hosts(preferred_host, configured_hosts) when is_list(configured_hosts) do
+  defp selected_worker_host(preferred_host, configured_hosts) when is_list(configured_hosts) do
     hosts =
       configured_hosts
       |> Enum.map(&String.trim/1)
@@ -198,19 +182,10 @@ defmodule SymphonyElixir.AgentRunner do
       |> Enum.uniq()
 
     case preferred_host do
-      host when is_binary(host) and host != "" ->
-        [host | Enum.reject(hosts, &(&1 == host))]
-
-      _ when hosts == [] ->
-        [nil]
-
-      _ ->
-        hosts
+      host when is_binary(host) and host != "" -> host
+      _ when hosts == [] -> nil
+      _ -> List.first(hosts)
     end
-  end
-
-  defp worker_hosts_for_log(worker_hosts) do
-    Enum.map(worker_hosts, &worker_host_for_log/1)
   end
 
   defp worker_host_for_log(nil), do: "local"
