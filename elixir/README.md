@@ -116,9 +116,11 @@ Notes:
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
-  unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
-  Symphony validation.
+- When `codex.turn_sandbox_policy` is set explicitly, Symphony forwards the configured map to
+  Codex, but for `workspaceWrite` policies it ensures the current issue workspace stays in
+  `writableRoots` at runtime. This allows adding extra writable paths without granting access to
+  sibling workspaces by default. Compatibility for the remaining fields still depends on the
+  targeted Codex app-server version rather than local Symphony validation.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue

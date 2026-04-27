@@ -1760,7 +1760,7 @@ defmodule SymphonyElixir.CoreTest do
         codex_thread_sandbox: "workspace-write",
         codex_turn_sandbox_policy: %{
           type: "workspaceWrite",
-          writableRoots: [Path.expand(workspace), workspace_cache]
+          writableRoots: [workspace_cache]
         }
       )
 
@@ -1793,9 +1793,12 @@ defmodule SymphonyElixir.CoreTest do
                end
              end)
 
+      assert {:ok, canonical_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.expand(workspace))
+
       expected_turn_policy = %{
         "type" => "workspaceWrite",
-        "writableRoots" => [Path.expand(workspace), workspace_cache]
+        "writableRoots" => [canonical_workspace, workspace_cache]
       }
 
       assert Enum.any?(lines, fn line ->

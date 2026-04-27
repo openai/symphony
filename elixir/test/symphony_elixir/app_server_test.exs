@@ -164,6 +164,18 @@ defmodule SymphonyElixir.AppServerTest do
         trace = File.read!(trace_file)
         lines = String.split(trace, "\n", trim: true)
 
+        {:ok, canonical_workspace} =
+          SymphonyElixir.PathSafety.canonicalize(Path.expand(workspace))
+
+        expected_policy =
+          case configured_policy do
+            %{"type" => "workspaceWrite"} ->
+              Map.put(configured_policy, "writableRoots", [canonical_workspace, "relative/path"])
+
+            _ ->
+              configured_policy
+          end
+
         assert Enum.any?(lines, fn line ->
                  if String.starts_with?(line, "JSON:") do
                    line
@@ -171,7 +183,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
                    |> then(fn payload ->
                      payload["method"] == "turn/start" &&
-                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy
+                       get_in(payload, ["params", "sandboxPolicy"]) == expected_policy
                    end)
                  else
                    false
