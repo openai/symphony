@@ -4,6 +4,15 @@ Status: Draft v1 (language-agnostic)
 
 Purpose: Define a service that orchestrates coding agents to get project work done.
 
+## Normative Language
+
+The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHOULD`, `SHOULD NOT`, `RECOMMENDED`, `MAY`, and
+`OPTIONAL` in this document are to be interpreted as described in RFC 2119.
+
+`Implementation-defined` means the behavior is part of the implementation contract, but this
+specification does not prescribe one universal policy. Implementations MUST document the selected
+behavior.
+
 ## 1. Problem Statement
 
 Symphony is a long-running automation service that continuously reads work from an issue tracker
@@ -43,7 +52,8 @@ Important boundary:
 - Recover from transient failures with exponential backoff.
 - Load runtime behavior from a repository-owned `WORKFLOW.md` contract.
 - Expose operator-visible observability (at minimum structured logs).
-- Support restart recovery without requiring a persistent database.
+- Support tracker/filesystem-driven restart recovery without requiring a persistent database; exact
+  in-memory scheduler state is not restored.
 
 ### 2.2 Non-Goals
 
@@ -130,7 +140,7 @@ Symphony is easiest to port when kept in these layers:
 - Issue tracker API (Linear for `tracker.kind: linear` in this specification version).
 - Local filesystem for workspaces and logs.
 - Optional workspace population tooling (for example Git CLI, if used).
-- Coding-agent executable that supports JSON-RPC-like app-server mode over stdio.
+- Coding-agent executable that supports the targeted Codex app-server mode.
 - Host environment authentication for the issue tracker and coding agent.
 
 ## 4. Core Domain Model
@@ -194,8 +204,7 @@ Filesystem workspace assigned to one issue identifier.
 
 Fields (logical):
 
-- `path` (workspace path; current runtime typically uses absolute paths, but relative roots are
-  possible if configured without path separators)
+- `path` (absolute workspace path)
 - `workspace_key` (sanitized issue identifier)
 - `created_now` (boolean, used to gate `after_create` hook)
 
@@ -330,11 +339,9 @@ Unknown keys should be ignored for forward compatibility.
 Note:
 
 - The workflow front matter is extensible. Optional extensions may define additional top-level keys
-  (for example `server`) without changing the core schema above.
+  without changing the core schema above.
 - Extensions should document their field schema, defaults, validation rules, and whether changes
   apply dynamically or require restart.
-- Common extension: `server.port` (integer) enables the optional HTTP server described in Section
-  13.7.
 
 #### 5.3.1 `tracker` (object)
 
@@ -360,7 +367,7 @@ Fields:
 
 Fields:
 
-- `interval_ms` (integer or string integer)
+- `interval_ms` (integer)
   - Default: `30000`
   - Changes should be re-applied at runtime and affect future tick scheduling without restart.
 
@@ -370,9 +377,9 @@ Fields:
 
 - `root` (path string or `$VAR`)
   - Default: `<system-temp>/symphony_workspaces`
-  - `~` and strings containing path separators are expanded.
-  - Bare strings without path separators are preserved as-is (relative roots are allowed but
-    discouraged).
+  - `~` is expanded.
+  - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
+  - The effective workspace root is normalized to an absolute path before use.
 
 #### 5.3.4 `hooks` (object)
 
@@ -395,17 +402,21 @@ Fields:
 - `timeout_ms` (integer, optional)
   - Default: `60000`
   - Applies to all workspace hooks.
-  - Non-positive values should be treated as invalid and fall back to the default.
+  - Invalid values fail configuration validation.
   - Changes should be re-applied at runtime for future hook executions.
 
 #### 5.3.5 `agent` (object)
 
 Fields:
 
-- `max_concurrent_agents` (integer or string integer)
+- `max_concurrent_agents` (integer)
   - Default: `10`
   - Changes should be re-applied at runtime and affect subsequent dispatch decisions.
-- `max_retry_backoff_ms` (integer or string integer)
+- `max_turns` (positive integer)
+  - Default: `20`
+  - Limits the number of coding-agent turns within one worker session.
+  - Invalid values fail configuration validation.
+- `max_retry_backoff_ms` (integer)
   - Default: `300000` (5 minutes)
   - Changes should be re-applied at runtime and affect future retry scheduling.
 - `max_concurrent_agents_by_state` (map `state_name -> positive integer`)
@@ -485,14 +496,18 @@ Dispatch gating behavior:
 
 ## 6. Configuration Specification
 
-### 6.1 Source Precedence and Resolution Semantics
+### 6.1 Configuration Resolution Pipeline
 
-Configuration precedence:
+Configuration is resolved in this order:
 
-1. Workflow file path selection (runtime setting -> cwd default).
-2. YAML front matter values.
-3. Environment indirection via `$VAR_NAME` inside selected YAML values.
-4. Built-in defaults.
+1. Select the workflow file path (explicit runtime setting, otherwise cwd default).
+2. Parse YAML front matter into a raw config map.
+3. Apply built-in defaults for missing optional fields.
+4. Resolve `$VAR_NAME` indirection only for config values that explicitly contain `$VAR_NAME`.
+5. Coerce and validate typed values.
+
+Environment variables do not globally override YAML values. They are used only when a config value
+explicitly references them.
 
 Value coercion semantics:
 
@@ -501,25 +516,27 @@ Value coercion semantics:
   - `$VAR` expansion for env-backed path values
   - Apply expansion only to values intended to be local filesystem paths; do not rewrite URIs or
     arbitrary shell command strings.
+- Relative `workspace.root` values resolve relative to the directory containing the selected
+  `WORKFLOW.md`.
 
 ### 6.2 Dynamic Reload Semantics
 
-Dynamic reload is required:
+Dynamic reload is REQUIRED:
 
-- The software should watch `WORKFLOW.md` for changes.
-- On change, it should re-read and re-apply workflow config and prompt template without restart.
-- The software should attempt to adjust live behavior to the new config (for example polling
+- The software MUST detect `WORKFLOW.md` changes.
+- On change, it MUST re-read and re-apply workflow config and prompt template without restart.
+- The software MUST attempt to adjust live behavior to the new config (for example polling
   cadence, concurrency limits, active/terminal states, codex settings, workspace paths/hooks, and
   prompt content for future runs).
 - Reloaded config applies to future dispatch, retry scheduling, reconciliation decisions, hook
   execution, and agent launches.
-- Implementations are not required to restart in-flight agent sessions automatically when config
+- Implementations are not REQUIRED to restart in-flight agent sessions automatically when config
   changes.
-- Extensions that manage their own listeners/resources (for example an HTTP server port change) may
+- Extensions that manage their own listeners/resources (for example an HTTP server port change) MAY
   require restart unless the implementation explicitly supports live rebind.
-- Implementations should also re-validate/reload defensively during runtime operations (for example
+- Implementations SHOULD also re-validate/reload defensively during runtime operations (for example
   before dispatch) in case filesystem watch events are missed.
-- Invalid reloads should not crash the service; keep operating with the last known good effective
+- Invalid reloads MUST NOT crash the service; keep operating with the last known good effective
   configuration and emit an operator-visible error.
 
 ### 6.3 Dispatch Preflight Validation
@@ -547,9 +564,11 @@ Validation checks:
 - `tracker.project_slug` is present when required by the selected tracker kind.
 - `codex.command` is present and non-empty.
 
-### 6.4 Config Fields Summary (Cheat Sheet)
+### 6.4 Core Config Fields Summary (Cheat Sheet)
 
 This section is intentionally redundant so a coding agent can implement the config layer quickly.
+Extension fields are documented in the extension section that defines them. Core conformance does
+not require recognizing or validating extension fields unless that extension is implemented.
 
 - `tracker.kind`: string, required, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
@@ -558,11 +577,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
-- `workspace.root`: path, default `<system-temp>/symphony_workspaces`
-- `worker.ssh_hosts` (extension): list of SSH host strings, optional; when omitted, work runs
-  locally
-- `worker.max_concurrent_agents_per_host` (extension): positive integer, optional; shared per-host
-  cap applied across configured SSH hosts
+- `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -579,8 +594,6 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
-- `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
-  for ephemeral local bind, and CLI `--port` overrides it
 
 ## 7. Orchestration State Machine
 
@@ -733,12 +746,6 @@ Per-state limit:
 
 The runtime counts issues by their current tracked state in the `running` map.
 
-Optional SSH host limit:
-
-- When `worker.max_concurrent_agents_per_host` is set, each configured SSH host may run at most
-  that many concurrent agents at once.
-- Hosts at that cap are skipped for new dispatch until capacity frees up.
-
 ### 8.4 Retry and Backoff
 
 Retry entry creation:
@@ -806,8 +813,7 @@ This prevents stale terminal workspaces from accumulating after restarts.
 
 Workspace root:
 
-- `workspace.root` (normalized path; the current config layer expands path-like values and preserves
-  bare relative names)
+- `workspace.root` (normalized absolute path)
 
 Per-issue workspace path:
 
@@ -899,17 +905,19 @@ Invariant 3: Workspace key is sanitized.
 
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
-This section defines the language-neutral contract for integrating a coding agent app-server.
+This section defines Symphony's language-neutral responsibilities when integrating a Codex
+app-server. The Codex app-server protocol for the targeted Codex version is the source of truth for
+protocol schemas, message payloads, transport framing, and method names.
 
-Compatibility profile:
+Protocol source of truth:
 
-- The normative contract is message ordering, required behaviors, and the logical fields that must
-  be extracted (for example session IDs, completion state, approval handling, and usage/rate-limit
-  telemetry).
-- Exact JSON field names may vary slightly across compatible app-server versions.
-- Implementations should tolerate equivalent payload shapes when they carry the same logical
-  meaning, especially for nested IDs, approval requests, user-input-required signals, and
-  token/rate-limit metadata.
+- Implementations MUST send messages that are valid for the targeted Codex app-server version.
+- Implementations MUST consult the targeted Codex app-server documentation or generated schema
+  instead of treating this specification as a protocol schema.
+- If this specification appears to conflict with the targeted Codex app-server protocol, the Codex
+  protocol controls protocol shape and transport behavior.
+- Symphony-specific requirements in this section still control orchestration behavior, workspace
+  selection, prompt construction, continuation handling, and observability extraction.
 
 ### 10.1 Launch Contract
 
@@ -918,94 +926,71 @@ Subprocess launch parameters:
 - Command: `codex.command`
 - Invocation: `bash -lc <codex.command>`
 - Working directory: workspace path
-- Stdout/stderr: separate streams
-- Framing: line-delimited protocol messages on stdout (JSON-RPC-like JSON per line)
+- Transport/framing: the protocol transport required by the targeted Codex app-server version
 
 Notes:
 
 - The default command is `codex app-server`.
-- Approval policy, cwd, and prompt are expressed in the protocol messages in Section 10.2.
+- Approval policy, sandbox policy, cwd, prompt input, and optional tool declarations are supplied
+  using fields supported by the targeted Codex app-server version.
 
 Recommended additional process settings:
 
 - Max line size: 10 MB (for safe buffering)
 
-### 10.2 Session Startup Handshake
+### 10.2 Session Startup Responsibilities
 
 Reference: https://developers.openai.com/codex/app-server/
 
-The client must send these protocol messages in order:
+Startup MUST follow the targeted Codex app-server contract. Symphony additionally requires the
+client to:
 
-Illustrative startup transcript (equivalent payload shapes are acceptable if they preserve the same
-semantics):
-
-```json
-{"id":1,"method":"initialize","params":{"clientInfo":{"name":"symphony","version":"1.0"},"capabilities":{}}}
-{"method":"initialized","params":{}}
-{"id":2,"method":"thread/start","params":{"approvalPolicy":"<implementation-defined>","sandbox":"<implementation-defined>","cwd":"/abs/workspace"}}
-{"id":3,"method":"turn/start","params":{"threadId":"<thread-id>","input":[{"type":"text","text":"<rendered prompt-or-continuation-guidance>"}],"cwd":"/abs/workspace","title":"ABC-123: Example","approvalPolicy":"<implementation-defined>","sandboxPolicy":{"type":"<implementation-defined>"}}}
-```
-
-1. `initialize` request
-   - Params include:
-     - `clientInfo` object (for example `{name, version}`)
-     - `capabilities` object (may be empty)
-   - If the targeted Codex app-server requires capability negotiation for dynamic tools, include the
-     necessary capability flag(s) here.
-   - Wait for response (`read_timeout_ms`)
-2. `initialized` notification
-3. `thread/start` request
-   - Params include:
-     - `approvalPolicy` = implementation-defined session approval policy value
-     - `sandbox` = implementation-defined session sandbox value
-     - `cwd` = absolute workspace path
-     - If optional client-side tools are implemented, include their advertised tool specs using the
-       protocol mechanism supported by the targeted Codex app-server version.
-4. `turn/start` request
-   - Params include:
-     - `threadId`
-     - `input` = single text item containing rendered prompt for the first turn, or continuation
-       guidance for later turns on the same thread
-     - `cwd`
-     - `title` = `<issue.identifier>: <issue.title>`
-     - `approvalPolicy` = implementation-defined turn approval policy value
-     - `sandboxPolicy` = implementation-defined object-form sandbox policy payload when required by
-       the targeted app-server version
+- Start the app-server subprocess in the per-issue workspace.
+- Initialize the app-server session using the targeted Codex app-server protocol.
+- Create or resume a coding-agent thread according to the targeted protocol.
+- Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
+  targeted protocol accepts cwd.
+- Start the first turn with the rendered issue prompt.
+- Start later in-worker continuation turns on the same live thread with continuation guidance rather
+  than resending the original issue prompt.
+- Supply the implementation's documented approval and sandbox policy using fields supported by the
+  targeted protocol.
+- Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
+  protocol supports turn or session titles.
+- Advertise optional client-side tools using the targeted protocol when those tools are implemented.
 
 Session identifiers:
 
-- Read `thread_id` from `thread/start` result `result.thread.id`
-- Read `turn_id` from each `turn/start` result `result.turn.id`
+- Extract `thread_id` from the thread identity returned by the targeted Codex app-server protocol.
+- Extract `turn_id` from each turn identity returned by the targeted Codex app-server protocol.
 - Emit `session_id = "<thread_id>-<turn_id>"`
 - Reuse the same `thread_id` for all continuation turns inside one worker run
 
 ### 10.3 Streaming Turn Processing
 
-The client reads line-delimited messages until the turn terminates.
+The client processes app-server updates according to the targeted Codex app-server protocol until
+the active turn terminates.
 
 Completion conditions:
 
-- `turn/completed` -> success
-- `turn/failed` -> failure
-- `turn/cancelled` -> failure
+- Targeted-protocol turn completion signal -> success
+- Targeted-protocol turn failure signal -> failure
+- Targeted-protocol turn cancellation signal -> failure
 - turn timeout (`turn_timeout_ms`) -> failure
 - subprocess exit -> failure
 
 Continuation processing:
 
-- If the worker decides to continue after a successful turn, it should issue another `turn/start`
-  on the same live `threadId`.
+- If the worker decides to continue after a successful turn, it should start another turn on the same
+  live thread using the targeted protocol.
 - The app-server subprocess should remain alive across those continuation turns and be stopped only
   when the worker run is ending.
 
-Line handling requirements:
+Transport handling requirements:
 
-- Read protocol messages from stdout only.
-- Buffer partial stdout lines until newline arrives.
-- Attempt JSON parse on complete stdout lines.
-- Stderr is not part of the protocol stream:
-  - ignore it or log it as diagnostics
-  - do not attempt protocol JSON parsing on stderr
+- Follow the transport and framing rules of the targeted Codex app-server version.
+- For stdio-based transports, keep protocol stream handling separate from diagnostic stderr
+  handling unless the targeted protocol specifies otherwise.
 
 ### 10.4 Emitted Runtime Events (Upstream to Orchestrator)
 
@@ -1039,10 +1024,10 @@ Approval, sandbox, and user-input behavior is implementation-defined.
 
 Policy requirements:
 
-- Each implementation should document its chosen approval, sandbox, and operator-confirmation
+- Each implementation MUST document its chosen approval, sandbox, and operator-confirmation
   posture.
-- Approval requests and user-input-required events must not leave a run stalled indefinitely. An
-  implementation should either satisfy them, surface them to an operator, auto-resolve them, or
+- Approval requests and user-input-required events MUST NOT leave a run stalled indefinitely. An
+  implementation MAY either satisfy them, surface them to an operator, auto-resolve them, or
   fail the run according to its documented policy.
 
 Example high-trust behavior:
@@ -1055,8 +1040,8 @@ Unsupported dynamic tool calls:
 
 - Supported dynamic tool calls that are explicitly implemented and advertised by the runtime should
   be handled according to their extension contract.
-- If the agent requests a dynamic tool call (`item/tool/call`) that is not supported, return a tool
-  failure response and continue the session.
+- If the agent requests a dynamic tool call that is not supported, return a tool failure response
+  using the targeted protocol and continue the session.
 - This prevents the session from stalling on unsupported tool execution paths.
 
 Optional client-side tool extension:
@@ -1065,7 +1050,8 @@ Optional client-side tool extension:
 - Current optional standardized tool: `linear_graphql`.
 - If implemented, supported tools should be advertised to the app-server session during startup
   using the protocol mechanism supported by the targeted Codex app-server version.
-- Unsupported tool names should still return a failure result and continue the session.
+- Unsupported tool names should still return a failure result using the targeted protocol and
+  continue the session.
 
 `linear_graphql` extension contract:
 
@@ -1100,19 +1086,13 @@ Optional client-side tool extension:
 - Return the GraphQL response or error payload as structured tool output that the model can inspect
   in-session.
 
-Illustrative responses (equivalent payload shapes are acceptable if they preserve the same outcome):
+User-input-required policy:
 
-```json
-{"id":"<approval-id>","result":{"approved":true}}
-{"id":"<tool-call-id>","result":{"success":false,"error":"unsupported_tool_call"}}
-```
-
-Hard failure on user input requirement:
-
-- If the agent requests user input, fail the run attempt immediately.
-- The client detects this via:
-  - explicit method (`item/tool/requestUserInput`), or
-  - turn methods/flags indicating input is required.
+- Implementations MUST document how targeted-protocol user-input-required signals are handled.
+- A run MUST NOT stall indefinitely waiting for user input.
+- A conforming implementation MAY fail the run, surface the request to an operator, satisfy it
+  through an approved operator channel, or auto-resolve it according to its documented policy.
+- The example high-trust behavior above fails user-input-required turns immediately.
 
 ### 10.6 Timeouts and Error Mapping
 
@@ -1372,15 +1352,19 @@ If implemented:
 - The dashboard/API must be observability/control surfaces only and must not become required for
   orchestrator correctness.
 
+Extension config:
+
+- `server.port` (integer, optional)
+  - Enables the optional HTTP server.
+  - `0` requests an ephemeral port for local development and tests.
+  - CLI `--port` overrides `server.port` when both are present.
+
 Enablement (extension):
 
 - Start the HTTP server when a CLI `--port` argument is provided.
 - Start the HTTP server when `server.port` is present in `WORKFLOW.md` front matter.
-- `server.port` is extension configuration and is intentionally not part of the core front-matter
-  schema in Section 5.3.
-- Precedence: CLI `--port` overrides `server.port` when both are present.
-- `server.port` must be an integer. Positive values bind that port. `0` may be used to request an
-  ephemeral port for local development and tests.
+- The `server` top-level key is owned by this extension.
+- Positive `server.port` values bind that port.
 - Implementations should bind loopback by default (`127.0.0.1` or host equivalent) unless explicitly
   configured otherwise.
 - Changes to HTTP listener settings (for example `server.port`) do not need to hot-rebind;
@@ -1550,7 +1534,7 @@ API design notes:
    - Startup handshake failure
    - Turn failed/cancelled
    - Turn timeout
-   - User input requested (hard fail)
+   - User input requested and handled as failure by the implementation's documented policy
    - Subprocess exit
    - Stalled session (no activity)
 
@@ -1589,6 +1573,9 @@ API design notes:
 ### 14.3 Partial State Recovery (Restart)
 
 Current design is intentionally in-memory for scheduler state.
+Restart recovery means the service can resume useful operation by polling tracker state and reusing
+preserved workspaces. It does not mean retry timers, running sessions, or live worker state survive
+process restart.
 
 After restart:
 
@@ -1969,7 +1956,6 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Existing non-directory path at workspace location is handled safely (replace or fail per
   implementation policy)
 - Optional workspace population/synchronization errors are surfaced
-- Temporary artifacts (`tmp`, `.elixir_ls`) are removed during prep
 - `after_create` hook runs only on new workspace creation
 - `before_run` hook runs before each attempt and failure/timeouts abort the current attempt
 - `after_run` hook runs after each attempt and failure/timeouts are logged and ignored
@@ -2011,25 +1997,25 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 ### 17.5 Coding-Agent App-Server Client
 
 - Launch command uses workspace cwd and invokes `bash -lc <codex.command>`
-- Startup handshake sends `initialize`, `initialized`, `thread/start`, `turn/start`
-- `initialize` includes client identity/capabilities payload required by the targeted Codex
-  app-server protocol
+- Session startup follows the targeted Codex app-server protocol.
+- Client identity/capability payloads, when required, are valid for the targeted Codex app-server
+  protocol.
 - Policy-related startup payloads use the implementation's documented approval/sandbox settings
-- `thread/start` and `turn/start` parse nested IDs and emit `session_started`
+- Thread and turn identities exposed by the targeted protocol are extracted and used to emit
+  `session_started`
 - Request/response read timeout is enforced
 - Turn timeout is enforced
-- Partial JSON lines are buffered until newline
-- Stdout and stderr are handled separately; protocol JSON is parsed from stdout only
-- Non-JSON stderr lines are logged but do not crash parsing
+- Transport framing required by the targeted protocol is handled correctly
+- For stdio-based transports, diagnostic stderr handling is kept separate from the protocol stream
 - Command/file-change approvals are handled according to the implementation's documented policy
 - Unsupported dynamic tool calls are rejected without stalling the session
 - User input requests are handled according to the implementation's documented policy and do not
   stall indefinitely
-- Usage and rate-limit payloads are extracted from nested payload shapes
-- Compatible payload variants for approvals, user-input-required signals, and usage/rate-limit
-  telemetry are accepted when they preserve the same logical meaning
-- If optional client-side tools are implemented, the startup handshake advertises the supported tool
-  specs required for discovery by the targeted app-server version
+- Usage and rate-limit telemetry exposed by the targeted protocol is extracted
+- Approval, user-input-required, usage, and rate-limit signals are interpreted according to the
+  targeted protocol
+- If optional client-side tools are implemented, session startup advertises the supported tool specs
+  using the targeted app-server protocol
 - If the optional `linear_graphql` client-side tool extension is implemented:
   - the tool is advertised to the session
   - valid `query` / `variables` inputs execute against configured Linear auth
@@ -2123,6 +2109,13 @@ Use the same validation profiles as Section 17:
 
 This appendix describes a common extension profile in which Symphony keeps one central
 orchestrator but executes worker runs on one or more remote hosts over SSH.
+
+Extension config:
+
+- `worker.ssh_hosts` (list of SSH host strings, optional)
+  - When omitted, work runs locally.
+- `worker.max_concurrent_agents_per_host` (positive integer, optional)
+  - Shared per-host cap applied across configured SSH hosts.
 
 ### A.1 Execution Model
 
