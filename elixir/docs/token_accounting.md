@@ -285,11 +285,23 @@ That is a strong signal for Symphony:
 - use absolute totals as the main accounting surface
 - ignore last/delta values for totals
 
+## Durable Per-Issue Ledger
+
+The Elixir reference implementation persists token observations to `token_usage.jsonl` next to the
+configured log file. Each line is an append-only JSON object containing the issue identifier, Codex
+session id, source event, final/non-final marker, and cumulative input/output/total token values.
+
+The ledger is summarized by taking the maximum observed totals per `(issue_identifier, session_id)`
+and then summing those session high-water marks. This makes repeated live updates, retries, and
+final snapshots safe to append without double-counting. The ledger remains observability data only:
+it is not a billing surface and does not apply pricing or model-specific cost rules.
+
 ## Recommended Symphony Documentation Contract
 
 If Symphony documents token reporting externally, the contract should be:
 
 - Live token totals come from Codex thread-scoped cumulative usage.
+- Durable per-issue totals come from high-water cumulative totals per Codex session.
 - Incremental usage may also be emitted, but Symphony does not use it for totals.
 - Turn-completed usage is event-specific and should not be assumed to be a fresh additive increment.
 - Reporting is thread-based, and multiple turns can occur on one thread.
@@ -300,5 +312,6 @@ If Symphony documents token reporting externally, the contract should be:
 - Fallback to `info.total_token_usage`
 - Ignore `last` for totals
 - Key totals by `thread_id`
+- Persist high-water totals by `(issue_identifier, session_id)`
 - Do not classify generic `usage` by field name alone
 - Do not double-count turn-completed usage after live updates

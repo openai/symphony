@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, TokenUsageLedger}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -20,6 +20,7 @@ defmodule SymphonyElixirWeb.Presenter do
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
+          token_usage: TokenUsageLedger.summary(),
           rate_limits: snapshot.rate_limits
         }
 
@@ -37,11 +38,12 @@ defmodule SymphonyElixirWeb.Presenter do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
         retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+        token_usage = TokenUsageLedger.issue_summary(issue_identifier)
 
-        if is_nil(running) and is_nil(retry) do
+        if is_nil(running) and is_nil(retry) and is_nil(token_usage) do
           {:error, :issue_not_found}
         else
-          {:ok, issue_payload_body(issue_identifier, running, retry)}
+          {:ok, issue_payload_body(issue_identifier, running, retry, token_usage)}
         end
 
       _ ->
@@ -60,14 +62,14 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp issue_payload_body(issue_identifier, running, retry) do
+  defp issue_payload_body(issue_identifier, running, retry, token_usage) do
     %{
       issue_identifier: issue_identifier,
-      issue_id: issue_id_from_entries(running, retry),
-      status: issue_status(running, retry),
+      issue_id: issue_id_from_entries(running, retry, token_usage),
+      status: issue_status(running, retry, token_usage),
       workspace: %{
-        path: workspace_path(issue_identifier, running, retry),
-        host: workspace_host(running, retry)
+        path: workspace_path(issue_identifier, running, retry, token_usage),
+        host: workspace_host(running, retry, token_usage)
       },
       attempts: %{
         restart_count: restart_count(retry),
@@ -80,12 +82,13 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,
-      tracked: %{}
+      tracked: %{},
+      token_usage: token_usage && token_usage_payload(token_usage)
     }
   end
 
-  defp issue_id_from_entries(running, retry),
-    do: (running && running.issue_id) || (retry && retry.issue_id)
+  defp issue_id_from_entries(running, retry, token_usage),
+    do: (running && running.issue_id) || (retry && retry.issue_id) || (token_usage && token_usage.issue_id)
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
@@ -94,6 +97,9 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(_running, nil), do: "running"
   defp issue_status(nil, _retry), do: "retrying"
   defp issue_status(_running, _retry), do: "running"
+
+  defp issue_status(nil, nil, %{}), do: "inactive"
+  defp issue_status(running, retry, _token_usage), do: issue_status(running, retry)
 
   defp running_entry_payload(entry) do
     %{
@@ -157,14 +163,26 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp workspace_path(issue_identifier, running, retry) do
+  defp workspace_path(issue_identifier, running, retry, token_usage) do
     (running && Map.get(running, :workspace_path)) ||
       (retry && Map.get(retry, :workspace_path)) ||
+      (token_usage && Map.get(token_usage, :workspace_path)) ||
       Path.join(Config.settings!().workspace.root, issue_identifier)
   end
 
-  defp workspace_host(running, retry) do
-    (running && Map.get(running, :worker_host)) || (retry && Map.get(retry, :worker_host))
+  defp workspace_host(running, retry, token_usage) do
+    (running && Map.get(running, :worker_host)) ||
+      (retry && Map.get(retry, :worker_host)) ||
+      (token_usage && Map.get(token_usage, :worker_host))
+  end
+
+  defp token_usage_payload(token_usage) do
+    %{
+      input_tokens: token_usage.input_tokens,
+      output_tokens: token_usage.output_tokens,
+      total_tokens: token_usage.total_tokens,
+      session_count: token_usage.session_count
+    }
   end
 
   defp recent_events_payload(running) do

@@ -80,6 +80,12 @@ Optional flags:
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
+Symphony also writes durable Codex token usage observations to `token_usage.jsonl` next to the
+configured log file. With the default log path, this is `./log/token_usage.jsonl`; with
+`--logs-root`, it follows the same log root. The ledger stores cumulative high-water token totals
+per issue/session so completed tickets can still be inspected after the in-memory dashboard state
+has moved on.
+
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 
@@ -159,6 +165,12 @@ The observability UI now runs on a minimal Phoenix stack:
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+
+The JSON API includes durable token summaries from `token_usage.jsonl`:
+
+- `/api/v1/state` includes `token_usage` totals plus issue/session counts.
+- `/api/v1/<issue_identifier>` can return `status: "inactive"` with `token_usage` for a completed
+  or otherwise inactive issue that is no longer present in the live running/retry state.
 
 ## Project Layout
 

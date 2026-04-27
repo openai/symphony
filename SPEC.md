@@ -1286,6 +1286,12 @@ SHOULD return:
   - `output_tokens`
   - `total_tokens`
   - `seconds_running` (aggregate runtime seconds as of snapshot time, including active sessions)
+- `token_usage` (optional durable token summary across completed and active sessions)
+  - `input_tokens`
+  - `output_tokens`
+  - `total_tokens`
+  - `issue_count`
+  - `session_count`
 - `rate_limits` (latest coding-agent rate limit payload, if available)
 
 RECOMMENDED snapshot error modes:
@@ -1316,6 +1322,10 @@ Token accounting rules:
 - Do not treat generic `usage` maps as cumulative totals unless the event type defines them that
   way.
 - Accumulate aggregate totals in orchestrator state.
+- Implementations may also persist append-only token observations for durable per-issue
+  observability. If they do, summarize by taking the high-water cumulative totals per
+  `(issue_identifier, session_id)` and then summing those session totals; do not sum every observed
+  event.
 
 Runtime accounting:
 
@@ -1429,6 +1439,13 @@ Minimum endpoints:
         "total_tokens": 7400,
         "seconds_running": 1834.2
       },
+      "token_usage": {
+        "input_tokens": 5000,
+        "output_tokens": 2400,
+        "total_tokens": 7400,
+        "issue_count": 2,
+        "session_count": 3
+      },
       "rate_limits": null
     }
     ```
@@ -1482,12 +1499,21 @@ Minimum endpoints:
         }
       ],
       "last_error": null,
-      "tracked": {}
+      "tracked": {},
+      "token_usage": {
+        "input_tokens": 1200,
+        "output_tokens": 800,
+        "total_tokens": 2000,
+        "session_count": 1
+      }
     }
     ```
 
-  - If the issue is unknown to the current in-memory state, return `404` with an error response (for
-    example `{\"error\":{\"code\":\"issue_not_found\",\"message\":\"...\"}}`).
+  - If the issue is unknown to the current in-memory state but exists in a durable token ledger, an
+    implementation may return an inactive issue payload with token usage.
+  - If the issue is unknown to both the current in-memory state and durable observability state,
+    return `404` with an error response (for example
+    `{\"error\":{\"code\":\"issue_not_found\",\"message\":\"...\"}}`).
 
 - `POST /api/v1/refresh`
   - Queues an immediate tracker poll + reconciliation cycle (best-effort trigger; implementations

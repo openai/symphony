@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, TokenUsageLedger, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -190,6 +190,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+        :ok = append_token_usage_observation(issue_id, updated_running_entry, update, false)
 
         state =
           state
@@ -1275,6 +1276,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
+    :ok = append_token_usage_observation(running_entry_issue_id(running_entry), running_entry, nil, true)
     runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
     codex_totals =
@@ -1292,6 +1294,51 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
+
+  defp append_token_usage_observation(issue_id, running_entry, update, final?) when is_map(running_entry) do
+    if token_usage_observation?(running_entry) do
+      TokenUsageLedger.append_observation(%{
+        observed_at: DateTime.utc_now(),
+        final: final?,
+        issue_id: issue_id,
+        issue_identifier: Map.get(running_entry, :identifier),
+        session_id: Map.get(running_entry, :session_id),
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        turn_count: Map.get(running_entry, :turn_count, 0),
+        input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+        output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+        total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
+        source_event: token_usage_source_event(update, final?)
+      })
+    end
+
+    :ok
+  end
+
+  defp token_usage_observation?(running_entry) do
+    is_binary(Map.get(running_entry, :session_id)) and
+      Enum.any?(
+        [
+          Map.get(running_entry, :codex_input_tokens, 0),
+          Map.get(running_entry, :codex_output_tokens, 0),
+          Map.get(running_entry, :codex_total_tokens, 0)
+        ],
+        &(&1 > 0)
+      )
+  end
+
+  defp token_usage_source_event(_update, true), do: :session_final
+
+  defp token_usage_source_event(%{event: event}, _final?), do: event
+
+  defp token_usage_source_event(_update, _final?), do: nil
+
+  defp running_entry_issue_id(%{issue: %Issue{id: issue_id}}) when is_binary(issue_id), do: issue_id
+
+  defp running_entry_issue_id(%{issue_id: issue_id}) when is_binary(issue_id), do: issue_id
+
+  defp running_entry_issue_id(_running_entry), do: nil
 
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()
