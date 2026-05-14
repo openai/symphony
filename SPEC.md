@@ -446,6 +446,9 @@ fields locally if they want stricter startup checks.
   - Default: implementation-defined.
 - `turn_sandbox_policy` (Codex `SandboxPolicy` value)
   - Default: implementation-defined.
+  - Runtime note: when the policy type is `workspaceWrite`, implementations should ensure the
+    current issue workspace remains writable even when callers add extra `writableRoots` for
+    linked-worktree metadata or similar adjunct paths.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)

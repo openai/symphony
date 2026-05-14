@@ -308,7 +308,7 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        {:ok, policy}
+        {:ok, ensure_workspace_write_root(policy, workspace, opts)}
 
       _ ->
         workspace
@@ -504,6 +504,35 @@ defmodule SymphonyElixir.Config.Schema do
   defp default_runtime_turn_sandbox_policy(workspace_root, _opts) do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
   end
+
+  defp ensure_workspace_write_root(%{"type" => "workspaceWrite"} = policy, workspace, opts) do
+    case runtime_workspace_write_root(workspace, opts) do
+      nil ->
+        policy
+
+      workspace_root ->
+        writable_roots =
+          policy
+          |> Map.get("writableRoots", [])
+          |> normalize_writable_roots()
+          |> List.insert_at(0, workspace_root)
+          |> Enum.uniq()
+
+        Map.put(policy, "writableRoots", writable_roots)
+    end
+  end
+
+  defp ensure_workspace_write_root(policy, _workspace, _opts), do: policy
+
+  defp runtime_workspace_write_root(workspace, opts)
+       when is_binary(workspace) and workspace != "" do
+    if Keyword.get(opts, :remote, false), do: workspace, else: Path.expand(workspace)
+  end
+
+  defp runtime_workspace_write_root(_workspace, _opts), do: nil
+
+  defp normalize_writable_roots(roots) when is_list(roots), do: roots
+  defp normalize_writable_roots(_roots), do: []
 
   defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
     do: workspace
