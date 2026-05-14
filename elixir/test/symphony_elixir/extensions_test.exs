@@ -376,6 +376,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
+             "token_usage" => %{
+               "input_tokens" => 0,
+               "output_tokens" => 0,
+               "total_tokens" => 0,
+               "issue_count" => 0,
+               "session_count" => 0
+             },
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
 
@@ -407,7 +414,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "logs" => %{"codex_session_logs" => []},
              "recent_events" => [],
              "last_error" => nil,
-             "tracked" => %{}
+             "tracked" => %{},
+             "token_usage" => nil
            }
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
@@ -425,6 +433,72 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+  end
+
+  test "phoenix observability api serves inactive ledger-backed issue details" do
+    orchestrator_name = Module.concat(__MODULE__, :LedgerBackedIssueOrchestrator)
+    snapshot = static_snapshot() |> Map.put(:running, []) |> Map.put(:retrying, [])
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    ledger_file = Application.fetch_env!(:symphony_elixir, :token_usage_ledger_file)
+
+    SymphonyElixir.TokenUsageLedger.append_observation(
+      %{
+        observed_at: "2026-04-20T10:00:00Z",
+        final: true,
+        issue_id: "issue-done",
+        issue_identifier: "MT-DONE",
+        session_id: "thread-done-turn-done",
+        worker_host: "worker-a",
+        workspace_path: "/tmp/MT-DONE",
+        turn_count: 3,
+        input_tokens: 40,
+        output_tokens: 6,
+        total_tokens: 46,
+        source_event: :session_final
+      },
+      file: ledger_file
+    )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    state_payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+
+    assert state_payload["token_usage"] == %{
+             "input_tokens" => 40,
+             "output_tokens" => 6,
+             "total_tokens" => 46,
+             "issue_count" => 1,
+             "session_count" => 1
+           }
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-DONE"), 200)
+
+    assert issue_payload == %{
+             "issue_identifier" => "MT-DONE",
+             "issue_id" => "issue-done",
+             "status" => "inactive",
+             "workspace" => %{"path" => "/tmp/MT-DONE", "host" => "worker-a"},
+             "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
+             "running" => nil,
+             "retry" => nil,
+             "logs" => %{"codex_session_logs" => []},
+             "recent_events" => [],
+             "last_error" => nil,
+             "tracked" => %{},
+             "token_usage" => %{
+               "input_tokens" => 40,
+               "output_tokens" => 6,
+               "total_tokens" => 46,
+               "session_count" => 1
+             }
+           }
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do

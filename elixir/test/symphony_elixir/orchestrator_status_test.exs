@@ -190,6 +190,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.turn_count == 1
     assert is_integer(snapshot_entry.runtime_seconds)
 
+    ledger_file = Application.fetch_env!(:symphony_elixir, :token_usage_ledger_file)
+
+    assert [
+             %{
+               final: false,
+               issue_id: ^issue_id,
+               issue_identifier: "MT-201",
+               session_id: "thread-usage-turn-usage",
+               input_tokens: 12,
+               output_tokens: 4,
+               total_tokens: 16,
+               source_event: "notification"
+             }
+           ] = SymphonyElixir.TokenUsageLedger.read_records(file: ledger_file)
+
     send(pid, {:DOWN, process_ref, :process, self(), :normal})
     completed_state = :sys.get_state(pid)
 
@@ -197,6 +212,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.codex_totals.output_tokens == 4
     assert completed_state.codex_totals.total_tokens == 16
     assert is_integer(completed_state.codex_totals.seconds_running)
+
+    assert [
+             %{final: false},
+             %{
+               final: true,
+               issue_id: ^issue_id,
+               issue_identifier: "MT-201",
+               session_id: "thread-usage-turn-usage",
+               input_tokens: 12,
+               output_tokens: 4,
+               total_tokens: 16,
+               source_event: "session_final"
+             }
+           ] = SymphonyElixir.TokenUsageLedger.read_records(file: ledger_file)
   end
 
   test "orchestrator snapshot tracks turn completed usage when present" do
@@ -605,6 +634,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :session_started,
+         session_id: "thread-usage-turn-usage",
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
     for usage <- [
           %{"input_tokens" => 8, "output_tokens" => 3, "total_tokens" => 11},
           %{"input_tokens" => 10, "output_tokens" => 4, "total_tokens" => 14}
@@ -628,6 +667,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.codex_input_tokens == 10
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 14
+
+    ledger_file = Application.fetch_env!(:symphony_elixir, :token_usage_ledger_file)
+
+    assert SymphonyElixir.TokenUsageLedger.summary(file: ledger_file) == %{
+             input_tokens: 10,
+             output_tokens: 4,
+             total_tokens: 14,
+             issue_count: 1,
+             session_count: 1
+           }
   end
 
   test "orchestrator token accounting ignores last_token_usage without cumulative totals" do
@@ -932,6 +981,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_message: nil,
       last_codex_timestamp: stale_activity_at,
       last_codex_event: :notification,
+      codex_input_tokens: 20,
+      codex_output_tokens: 3,
+      codex_total_tokens: 23,
       started_at: stale_activity_at
     }
 
@@ -957,8 +1009,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert is_integer(due_at_ms)
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 9_500
+    assert remaining_ms >= 8_000
     assert remaining_ms <= 10_500
+
+    ledger_file = Application.fetch_env!(:symphony_elixir, :token_usage_ledger_file)
+
+    assert [
+             %{
+               final: true,
+               issue_id: ^issue_id,
+               issue_identifier: "MT-STALL",
+               session_id: "thread-stall-turn-stall",
+               total_tokens: 23,
+               source_event: "session_final"
+             }
+           ] = SymphonyElixir.TokenUsageLedger.read_records(file: ledger_file)
   end
 
   test "status dashboard renders offline marker to terminal" do
