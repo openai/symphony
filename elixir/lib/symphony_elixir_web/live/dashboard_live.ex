@@ -92,6 +92,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
+            <p class="metric-label">Blocked</p>
+            <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
+            <p class="metric-detail">Issues paused for operator input or approval.</p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Total tokens</p>
             <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
             <p class="metric-detail numeric">
@@ -199,6 +205,80 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
                     </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Blocked sessions</h2>
+              <p class="section-copy">Issues paused because Codex requested operator input or approval.</p>
+            </div>
+          </div>
+
+          <%= if @payload.blocked == [] do %>
+            <p class="empty-state">No blocked sessions.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 760px;">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>State</th>
+                    <th>Session</th>
+                    <th>Blocked at</th>
+                    <th>Last update</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.blocked}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
+                    </td>
+                    <td>
+                      <span class={state_badge_class(entry.state || "Blocked")}>
+                        <%= entry.state || "Blocked" %>
+                      </span>
+                    </td>
+                    <td>
+                      <%= if entry.session_id do %>
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          data-label="Copy ID"
+                          data-copy={entry.session_id}
+                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                        >
+                          Copy ID
+                        </button>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                    <td class="mono"><%= entry.blocked_at || "n/a" %></td>
+                    <td>
+                      <div class="detail-stack">
+                        <span
+                          class="event-text"
+                          title={entry.last_message || to_string(entry.last_event || "n/a")}
+                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                        <span class="muted event-meta">
+                          <%= entry.last_event || "n/a" %>
+                          <%= if entry.last_event_at do %>
+                            · <span class="mono numeric"><%= entry.last_event_at %></span>
+                          <% end %>
+                        </span>
+                      </div>
+                    </td>
+                    <td><%= entry.error || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>

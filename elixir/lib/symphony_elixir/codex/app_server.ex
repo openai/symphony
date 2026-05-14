@@ -1059,6 +1059,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     Port.command(port, line)
   end
 
+  defp needs_input?("mcpServer/elicitation/request", payload) when is_map(payload), do: true
+
   defp needs_input?(method, payload)
        when is_binary(method) and is_map(payload) do
     String.starts_with?(method, "turn/") && input_required_method?(method, payload)
