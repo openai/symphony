@@ -156,6 +156,8 @@ codex:
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
+- Clickable running-session rows with an agent detail panel for current stage,
+  completed/pending execution steps, workspace metadata, and recent Codex events
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap

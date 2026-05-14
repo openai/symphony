@@ -10,9 +10,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    payload = load_payload()
+
     socket =
       socket
-      |> assign(:payload, load_payload())
+      |> assign(:payload, payload)
+      |> assign(:selected_issue_id, nil)
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -31,10 +34,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
+    payload = load_payload()
+
     {:noreply,
      socket
-     |> assign(:payload, load_payload())
+     |> assign(:payload, payload)
+     |> assign(:selected_issue_id, retained_selected_issue_id(payload, socket.assigns[:selected_issue_id]))
      |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_event("select_session", %{"issue-id" => issue_id}, socket) do
+    selected_issue_id =
+      if running_issue_id?(socket.assigns.payload, issue_id) do
+        issue_id
+      end
+
+    {:noreply, assign(socket, :selected_issue_id, selected_issue_id)}
+  end
+
+  def handle_event("clear_selected_session", _params, socket) do
+    {:noreply, assign(socket, :selected_issue_id, nil)}
   end
 
   @impl true
@@ -149,11 +169,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.running}>
+                  <tr
+                    :for={entry <- @payload.running}
+                    id={"running-session-#{running_entry_key(entry)}"}
+                    class={running_row_class(entry, @selected_issue_id)}
+                    phx-click="select_session"
+                    phx-value-issue-id={running_entry_key(entry)}
+                  >
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <a
+                          class="issue-link"
+                          href={"/api/v1/#{entry.issue_identifier}"}
+                          onclick="event.stopPropagation();"
+                        >JSON details</a>
                       </div>
                     </td>
                     <td>
@@ -169,7 +199,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                             class="subtle-button"
                             data-label="Copy ID"
                             data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                            onclick="event.stopPropagation(); navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
                           >
                             Copy ID
                           </button>
@@ -203,6 +233,86 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </tbody>
               </table>
             </div>
+
+            <% selected_entry = selected_running_entry(@payload, @selected_issue_id) %>
+            <%= if selected_entry do %>
+              <section class="agent-detail-panel" id={"agent-detail-#{running_entry_key(selected_entry)}"}>
+                <div class="agent-detail-header">
+                  <div>
+                    <p class="detail-kicker">Agent details</p>
+                    <h3 class="agent-detail-title"><%= selected_entry.issue_identifier %></h3>
+                    <p class="section-copy">
+                      <%= selected_entry.execution.current_stage %> · <%= selected_entry.execution.completed_count %> completed / <%= selected_entry.execution.pending_count %> pending
+                    </p>
+                  </div>
+                  <button type="button" class="subtle-button" phx-click="clear_selected_session">Close</button>
+                </div>
+
+                <div class="agent-stage-band">
+                  <span class="detail-label">Current stage</span>
+                  <strong><%= selected_entry.execution.current_stage %></strong>
+                  <span class="muted">
+                    Last update: <%= selected_entry.last_message || to_string(selected_entry.last_event || "n/a") %>
+                  </span>
+                </div>
+
+                <div class="agent-detail-grid">
+                  <div>
+                    <span class="detail-label">State</span>
+                    <strong><%= selected_entry.state %></strong>
+                  </div>
+                  <div>
+                    <span class="detail-label">Runtime / turns</span>
+                    <strong class="numeric"><%= format_runtime_and_turns(selected_entry.started_at, selected_entry.turn_count, @now) %></strong>
+                  </div>
+                  <div>
+                    <span class="detail-label">Session</span>
+                    <span class="mono"><%= selected_entry.session_id || "n/a" %></span>
+                  </div>
+                  <div>
+                    <span class="detail-label">Worker</span>
+                    <span><%= selected_entry.worker_host || "local" %></span>
+                  </div>
+                  <div class="detail-grid-wide">
+                    <span class="detail-label">Workspace</span>
+                    <span class="mono"><%= selected_entry.workspace_path || "n/a" %></span>
+                  </div>
+                </div>
+
+                <div class="agent-detail-columns">
+                  <div>
+                    <h4 class="detail-subtitle">Execution checklist</h4>
+                    <ol class="execution-steps">
+                      <li :for={step <- selected_entry.execution.steps} class={execution_step_class(step.status)}>
+                        <span class="step-state"><%= step_status_label(step.status) %></span>
+                        <div class="step-copy">
+                          <strong><%= step.label %></strong>
+                          <span class="muted"><%= step.detail %></span>
+                        </div>
+                      </li>
+                    </ol>
+                  </div>
+
+                  <div>
+                    <h4 class="detail-subtitle">Recent Codex events</h4>
+                    <%= if selected_entry.recent_events == [] do %>
+                      <p class="empty-state empty-state-compact">No timestamped Codex events captured yet.</p>
+                    <% else %>
+                      <div class="event-list">
+                        <div :for={event <- recent_events_for_display(selected_entry.recent_events)} class="event-row">
+                          <span class="mono event-time"><%= event.at %></span>
+                          <span class="event-message">
+                            <%= event.message || to_string(event.event || "n/a") %>
+                          </span>
+                        </div>
+                      </div>
+                    <% end %>
+                  </div>
+                </div>
+              </section>
+            <% else %>
+              <p class="detail-hint">Click a running session to inspect live execution details.</p>
+            <% end %>
           <% end %>
         </section>
 
@@ -248,6 +358,51 @@ defmodule SymphonyElixirWeb.DashboardLive do
     </section>
     """
   end
+
+  defp selected_running_entry(%{running: running}, selected_issue_id) when is_list(running) and is_binary(selected_issue_id) do
+    Enum.find(running, &(running_entry_key(&1) == selected_issue_id))
+  end
+
+  defp selected_running_entry(_payload, _selected_issue_id), do: nil
+
+  defp retained_selected_issue_id(payload, selected_issue_id) do
+    if running_issue_id?(payload, selected_issue_id) do
+      selected_issue_id
+    end
+  end
+
+  defp running_issue_id?(%{running: running}, issue_id) when is_list(running) and is_binary(issue_id) do
+    Enum.any?(running, &(running_entry_key(&1) == issue_id))
+  end
+
+  defp running_issue_id?(_payload, _issue_id), do: false
+
+  defp running_entry_key(entry) do
+    Map.get(entry, :issue_id) || Map.get(entry, :issue_identifier) || "unknown"
+  end
+
+  defp running_row_class(entry, selected_issue_id) do
+    base = "selectable-row"
+
+    if running_entry_key(entry) == selected_issue_id do
+      "#{base} selectable-row-selected"
+    else
+      base
+    end
+  end
+
+  defp recent_events_for_display(events) when is_list(events) do
+    events
+    |> Enum.reverse()
+    |> Enum.take(8)
+  end
+
+  defp recent_events_for_display(_events), do: []
+
+  defp execution_step_class(status), do: "execution-step execution-step-#{status}"
+  defp step_status_label("done"), do: "Done"
+  defp step_status_label("active"), do: "Now"
+  defp step_status_label(_status), do: "Next"
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())

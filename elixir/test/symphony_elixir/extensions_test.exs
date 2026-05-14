@@ -339,6 +339,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
+    expected_execution = expected_agent_working_execution()
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
@@ -356,7 +357,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "execution" => expected_execution,
+                 "recent_events" => []
                }
              ],
              "retrying" => [
@@ -401,7 +404,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+               "execution" => expected_execution
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
@@ -548,12 +552,25 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Offline"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
+    assert html =~ "Click a running session to inspect live execution details."
+    refute html =~ "Agent details"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    selected_html =
+      view
+      |> element("#running-session-issue-http")
+      |> render_click()
+
+    assert selected_html =~ "Agent details"
+    assert selected_html =~ "Execution checklist"
+    assert selected_html =~ "Current stage"
+    assert selected_html =~ "Agent working"
+    assert selected_html =~ "Dispatched to worker"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -713,6 +730,46 @@ defmodule SymphonyElixir.ExtensionsTest do
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}}
+    }
+  end
+
+  defp expected_agent_working_execution do
+    %{
+      "current_stage" => "Agent working",
+      "completed_count" => 3,
+      "pending_count" => 2,
+      "steps" => [
+        %{
+          "label" => "Dispatched to worker",
+          "status" => "done",
+          "detail" => "Agent task is running."
+        },
+        %{
+          "label" => "Workspace prepared",
+          "status" => "done",
+          "detail" => "Workspace path was not reported."
+        },
+        %{
+          "label" => "Codex session started",
+          "status" => "done",
+          "detail" => "thread-http"
+        },
+        %{
+          "label" => "Plan and inspect",
+          "status" => "active",
+          "detail" => "Agent is inspecting or planning next steps."
+        },
+        %{
+          "label" => "Run commands or edit files",
+          "status" => "pending",
+          "detail" => "Waiting for command, tool, or diff activity."
+        },
+        %{
+          "label" => "Finish turn",
+          "status" => "pending",
+          "detail" => "No completed turn reported yet."
+        }
+      ]
     }
   end
 
