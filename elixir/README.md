@@ -177,10 +177,12 @@ Operator check:
 2. Read `<workspace>/<ISSUE>/.artifacts/symphony/supervisor-status.json`.
 3. If Linear says `Human Review` and the snapshot says `human-review`, that is a
    real pause.
-4. If Linear says `Rework`, `Todo`, `In Progress`, or `Merging` and the snapshot
-   still says `human-review` or `blocked`, wait for one poll or call
+4. If Linear says `Rework`, `In Progress`, or `Merging` and the snapshot still
+   says `human-review` or `blocked`, wait for one poll or call
    `POST /api/v1/refresh`; the snapshot should change to `idle` with the
-   reconciliation reason above.
+   reconciliation reason above. `Todo` follows the normal dispatcher dependency
+   gate: non-terminal blockers remain a real hold, while unblocked `Todo`
+   snapshots reconcile the same way.
 
 ## Project Layout
 

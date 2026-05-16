@@ -751,7 +751,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  test "candidate reconciliation does not clear blocked actionable snapshots" do
+  test "candidate reconciliation keeps Todo snapshots blocked by active dependencies" do
     workspace_root =
       Path.join(
         System.tmp_dir!(),
@@ -768,7 +768,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         id: "issue-non-terminal",
         identifier: "NETSEC-NONTERMINAL",
         title: "Blocked by active work",
-        state: "Rework",
+        state: "Todo",
         blocked_by: [%{state: "In Progress"}]
       }
 
@@ -776,7 +776,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         id: "issue-malformed-blocker",
         identifier: "NETSEC-MALFORMED",
         title: "Blocked by unknown work",
-        state: "Rework",
+        state: "Todo",
         blocked_by: [%{}]
       }
 
@@ -806,6 +806,68 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
         assert snapshot["state"] == "blocked"
         refute Map.has_key?(snapshot, "reconciliation_reason")
+      end
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "candidate reconciliation clears Rework snapshots with stale dependency metadata" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-supervisor-snapshot-rework-blocker-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_active_states: ["Todo", "In Progress", "Rework"]
+      )
+
+      issue_non_terminal = %Issue{
+        id: "issue-rework-non-terminal",
+        identifier: "NETSEC-REWORK-NONTERMINAL",
+        title: "Rework with stale dependency metadata",
+        state: "Rework",
+        blocked_by: [%{state: "In Progress"}]
+      }
+
+      issue_malformed_blocker = %Issue{
+        id: "issue-rework-malformed-blocker",
+        identifier: "NETSEC-REWORK-MALFORMED",
+        title: "Rework with stale malformed dependency metadata",
+        state: "Rework",
+        blocked_by: [%{}]
+      }
+
+      for issue <- [issue_non_terminal, issue_malformed_blocker] do
+        status_path =
+          Path.join([
+            workspace_root,
+            issue.identifier,
+            SupervisorSnapshot.status_relative_path()
+          ])
+
+        File.mkdir_p!(Path.dirname(status_path))
+        File.write!(status_path, Jason.encode!(%{"state" => "blocked"}))
+      end
+
+      SupervisorSnapshot.reconcile_candidate_snapshots([
+        issue_non_terminal,
+        issue_malformed_blocker
+      ])
+
+      for issue <- [issue_non_terminal, issue_malformed_blocker] do
+        snapshot =
+          [workspace_root, issue.identifier, SupervisorSnapshot.status_relative_path()]
+          |> Path.join()
+          |> File.read!()
+          |> Jason.decode!()
+
+        assert snapshot["state"] == "idle"
+        assert snapshot["linear_state"] == "Rework"
+        assert snapshot["reconciliation_reason"] == "linear-state-newer-than-supervisor-snapshot"
       end
     after
       File.rm_rf(workspace_root)

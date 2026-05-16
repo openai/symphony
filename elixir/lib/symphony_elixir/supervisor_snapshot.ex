@@ -54,7 +54,7 @@ defmodule SymphonyElixir.SupervisorSnapshot do
   defp hold_snapshot_state?(_state), do: false
 
   defp issue_dispatchable?(%Issue{state: state, blocked_by: blockers}) when is_binary(state) do
-    active_issue_state?(state) and !blocked_by_non_terminal?(blockers)
+    active_issue_state?(state) and !todo_blocked_by_non_terminal?(state, blockers)
   end
 
   defp issue_dispatchable?(_issue), do: false
@@ -65,6 +65,13 @@ defmodule SymphonyElixir.SupervisorSnapshot do
     |> MapSet.new()
     |> MapSet.member?(normalize_state(state))
   end
+
+  defp todo_blocked_by_non_terminal?(state, blockers)
+       when is_binary(state) and is_list(blockers) do
+    normalize_state(state) == "todo" and blocked_by_non_terminal?(blockers)
+  end
+
+  defp todo_blocked_by_non_terminal?(_state, _blockers), do: false
 
   defp blocked_by_non_terminal?(blockers) when is_list(blockers) do
     terminal_states =
@@ -80,8 +87,6 @@ defmodule SymphonyElixir.SupervisorSnapshot do
         true
     end)
   end
-
-  defp blocked_by_non_terminal?(_blockers), do: false
 
   defp write_reconciled_snapshot(status_path, snapshot, %Issue{} = issue) do
     now = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
