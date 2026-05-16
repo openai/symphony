@@ -31,6 +31,21 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec existing_issue_workspace(map() | String.t() | nil) ::
+          {:ok, Path.t()} | :missing | {:error, term()}
+  def existing_issue_workspace(issue_or_identifier) do
+    issue_context = issue_context(issue_or_identifier)
+    safe_id = safe_identifier(issue_context.issue_identifier)
+
+    with {:ok, workspace} <- workspace_path_for_issue(safe_id, nil),
+         :ok <- validate_workspace_path(workspace, nil) do
+      if File.dir?(workspace), do: {:ok, workspace}, else: :missing
+    end
+  rescue
+    error in [ArgumentError, ErlangError, File.Error] ->
+      {:error, error}
+  end
+
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->

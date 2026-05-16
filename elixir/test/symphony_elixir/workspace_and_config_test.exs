@@ -4,6 +4,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.SupervisorSnapshot
 
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
@@ -582,6 +583,337 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert skipped_issue.identifier == "MT-1005"
     assert skipped_issue.blocked_by == [%{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}]
+  end
+
+  test "candidate reconciliation invalidates stale hold supervisor snapshot for actionable issue" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-supervisor-snapshot-stale-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_active_states: ["Todo", "In Progress", "Rework"]
+      )
+
+      workspace = Path.join(workspace_root, "NETSEC-1128")
+      status_path = Path.join(workspace, SupervisorSnapshot.status_relative_path())
+      File.mkdir_p!(Path.dirname(status_path))
+
+      File.write!(
+        status_path,
+        Jason.encode!(%{
+          "state" => "human-review",
+          "active_worker" => nil,
+          "last_heartbeat" => "2026-05-11T08:12:54Z",
+          "recent_failure" => "waiting for human review"
+        })
+      )
+
+      issue = %Issue{
+        id: "issue-1128",
+        identifier: "NETSEC-1128",
+        title: "Hosted handoff",
+        state: "Rework",
+        blocked_by: []
+      }
+
+      assert [^issue] = SupervisorSnapshot.reconcile_candidate_snapshots([issue])
+
+      snapshot = status_path |> File.read!() |> Jason.decode!()
+      assert snapshot["state"] == "idle"
+      assert snapshot["linear_state"] == "Rework"
+      assert snapshot["recent_failure"] == "none"
+      assert snapshot["reconciliation_reason"] == "linear-state-newer-than-supervisor-snapshot"
+      assert snapshot["reconciled_from"]["state"] == "human-review"
+      assert is_binary(snapshot["reconciled_at"])
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "candidate reconciliation preserves real hold supervisor snapshot for non-actionable issue" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-supervisor-snapshot-hold-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_active_states: ["Todo", "In Progress", "Rework"]
+      )
+
+      workspace = Path.join(workspace_root, "NETSEC-1128")
+      status_path = Path.join(workspace, SupervisorSnapshot.status_relative_path())
+      File.mkdir_p!(Path.dirname(status_path))
+
+      File.write!(
+        status_path,
+        Jason.encode!(%{
+          "state" => "human-review",
+          "active_worker" => nil,
+          "last_heartbeat" => "2026-05-11T08:12:54Z",
+          "recent_failure" => "waiting for human review"
+        })
+      )
+
+      issue = %Issue{
+        id: "issue-1128",
+        identifier: "NETSEC-1128",
+        title: "Hosted handoff",
+        state: "Human Review",
+        blocked_by: []
+      }
+
+      SupervisorSnapshot.reconcile_candidate_snapshots([issue])
+
+      snapshot = status_path |> File.read!() |> Jason.decode!()
+      assert snapshot["state"] == "human-review"
+      refute Map.has_key?(snapshot, "reconciliation_reason")
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "candidate reconciliation leaves malformed or absent supervisor snapshots alone" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-supervisor-snapshot-invalid-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_active_states: ["Todo", "In Progress", "Rework"]
+      )
+
+      issue_missing = %Issue{
+        id: "issue-missing",
+        identifier: "NETSEC-MISSING",
+        title: "Missing status",
+        state: "Rework",
+        blocked_by: []
+      }
+
+      issue_invalid = %Issue{
+        id: "issue-invalid",
+        identifier: "NETSEC-INVALID",
+        title: "Invalid status",
+        state: "Rework",
+        blocked_by: []
+      }
+
+      issue_array = %Issue{
+        id: "issue-array",
+        identifier: "NETSEC-ARRAY",
+        title: "Array status",
+        state: "Rework",
+        blocked_by: []
+      }
+
+      File.mkdir_p!(Path.join(workspace_root, "NETSEC-MISSING"))
+
+      invalid_status_path =
+        Path.join([
+          workspace_root,
+          "NETSEC-INVALID",
+          SupervisorSnapshot.status_relative_path()
+        ])
+
+      array_status_path =
+        Path.join([
+          workspace_root,
+          "NETSEC-ARRAY",
+          SupervisorSnapshot.status_relative_path()
+        ])
+
+      File.mkdir_p!(Path.dirname(invalid_status_path))
+      File.mkdir_p!(Path.dirname(array_status_path))
+      File.write!(invalid_status_path, "{not json")
+      File.write!(array_status_path, Jason.encode!(["human-review"]))
+
+      assert [^issue_missing, ^issue_invalid, ^issue_array] =
+               SupervisorSnapshot.reconcile_candidate_snapshots([
+                 issue_missing,
+                 issue_invalid,
+                 issue_array
+               ])
+
+      assert File.read!(invalid_status_path) == "{not json"
+      assert array_status_path |> File.read!() |> Jason.decode!() == ["human-review"]
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "candidate reconciliation does not clear blocked actionable snapshots" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-supervisor-snapshot-blocked-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_active_states: ["Todo", "In Progress", "Rework"]
+      )
+
+      issue_non_terminal = %Issue{
+        id: "issue-non-terminal",
+        identifier: "NETSEC-NONTERMINAL",
+        title: "Blocked by active work",
+        state: "Rework",
+        blocked_by: [%{state: "In Progress"}]
+      }
+
+      issue_malformed_blocker = %Issue{
+        id: "issue-malformed-blocker",
+        identifier: "NETSEC-MALFORMED",
+        title: "Blocked by unknown work",
+        state: "Rework",
+        blocked_by: [%{}]
+      }
+
+      for issue <- [issue_non_terminal, issue_malformed_blocker] do
+        status_path =
+          Path.join([
+            workspace_root,
+            issue.identifier,
+            SupervisorSnapshot.status_relative_path()
+          ])
+
+        File.mkdir_p!(Path.dirname(status_path))
+        File.write!(status_path, Jason.encode!(%{"state" => "blocked"}))
+      end
+
+      SupervisorSnapshot.reconcile_candidate_snapshots([
+        issue_non_terminal,
+        issue_malformed_blocker
+      ])
+
+      for issue <- [issue_non_terminal, issue_malformed_blocker] do
+        snapshot =
+          [workspace_root, issue.identifier, SupervisorSnapshot.status_relative_path()]
+          |> Path.join()
+          |> File.read!()
+          |> Jason.decode!()
+
+        assert snapshot["state"] == "blocked"
+        refute Map.has_key?(snapshot, "reconciliation_reason")
+      end
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "candidate reconciliation handles non-issue inputs and incomplete issue snapshots" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-supervisor-snapshot-incomplete-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_active_states: ["Todo", "In Progress", "Rework"]
+      )
+
+      issue_no_state = %Issue{
+        id: "issue-no-state",
+        identifier: "NETSEC-NOSTATE",
+        title: "No state",
+        state: nil,
+        blocked_by: nil
+      }
+
+      issue_no_snapshot_state = %Issue{
+        id: "issue-no-snapshot-state",
+        identifier: "NETSEC-NOSNAPSHOTSTATE",
+        title: "No snapshot state",
+        state: "Rework",
+        blocked_by: nil
+      }
+
+      no_state_path =
+        Path.join([
+          workspace_root,
+          "NETSEC-NOSTATE",
+          SupervisorSnapshot.status_relative_path()
+        ])
+
+      no_snapshot_state_path =
+        Path.join([
+          workspace_root,
+          "NETSEC-NOSNAPSHOTSTATE",
+          SupervisorSnapshot.status_relative_path()
+        ])
+
+      File.mkdir_p!(Path.dirname(no_state_path))
+      File.mkdir_p!(Path.dirname(no_snapshot_state_path))
+      File.write!(no_state_path, Jason.encode!(%{"state" => "human-review"}))
+      File.write!(no_snapshot_state_path, Jason.encode!(%{"state" => nil}))
+
+      assert [:not_an_issue, ^issue_no_state, ^issue_no_snapshot_state] =
+               SupervisorSnapshot.reconcile_candidate_snapshots([
+                 :not_an_issue,
+                 issue_no_state,
+                 issue_no_snapshot_state
+               ])
+
+      assert no_state_path |> File.read!() |> Jason.decode!() == %{"state" => "human-review"}
+      assert no_snapshot_state_path |> File.read!() |> Jason.decode!() == %{"state" => nil}
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "candidate reconciliation treats missing blocker metadata as dispatchable" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-supervisor-snapshot-nil-blockers-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_active_states: ["Todo", "In Progress", "Rework"]
+      )
+
+      issue = %Issue{
+        id: "issue-nil-blockers",
+        identifier: "NETSEC-NILBLOCKERS",
+        title: "Nil blockers",
+        state: "Rework",
+        blocked_by: nil
+      }
+
+      status_path =
+        Path.join([
+          workspace_root,
+          "NETSEC-NILBLOCKERS",
+          SupervisorSnapshot.status_relative_path()
+        ])
+
+      File.mkdir_p!(Path.dirname(status_path))
+      File.write!(status_path, Jason.encode!(%{"state" => "blocked"}))
+
+      SupervisorSnapshot.reconcile_candidate_snapshots([issue])
+
+      snapshot = status_path |> File.read!() |> Jason.decode!()
+      assert snapshot["state"] == "idle"
+      assert snapshot["linear_state"] == "Rework"
+      assert snapshot["reconciliation_reason"] == "linear-state-newer-than-supervisor-snapshot"
+    after
+      File.rm_rf(workspace_root)
+    end
   end
 
   test "workspace remove returns error information for missing directory" do

@@ -160,6 +160,28 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
+## Supervisor Snapshot Reconciliation
+
+Symphony treats Linear as the source of truth for issue workflow state. On every
+poll, the orchestrator checks existing workspace-local supervisor snapshots at
+`.artifacts/symphony/supervisor-status.json` for candidate issues returned by
+Linear. If a snapshot still says `human-review` or `blocked` while the fresh
+Linear issue is now in an active dispatch state such as `Rework`, Symphony
+rewrites the snapshot to `idle`, records the current `linear_state`, clears the
+old failure text, and adds `reconciliation_reason:
+linear-state-newer-than-supervisor-snapshot`.
+
+Operator check:
+
+1. Read the current Linear state for the issue.
+2. Read `<workspace>/<ISSUE>/.artifacts/symphony/supervisor-status.json`.
+3. If Linear says `Human Review` and the snapshot says `human-review`, that is a
+   real pause.
+4. If Linear says `Rework`, `Todo`, `In Progress`, or `Merging` and the snapshot
+   still says `human-review` or `blocked`, wait for one poll or call
+   `POST /api/v1/refresh`; the snapshot should change to `idle` with the
+   reconciliation reason above.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
