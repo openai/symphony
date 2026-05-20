@@ -342,7 +342,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 0},
+             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -370,7 +370,21 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil
                }
              ],
-             "blocked" => [],
+             "blocked" => [
+               %{
+                 "issue_id" => "issue-blocked",
+                 "issue_identifier" => "MT-BLOCKED",
+                 "state" => "In Progress",
+                 "error" => "codex turn requires operator input",
+                 "worker_host" => "dm-dev2",
+                 "workspace_path" => "/workspaces/MT-BLOCKED",
+                 "session_id" => "thread-blocked",
+                 "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
+                 "last_event" => "turn_input_required",
+                 "last_message" => "turn blocked: waiting for user input",
+                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
+               }
+             ],
              "codex_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -416,6 +430,18 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
              json_response(conn, 200)
+
+    conn = get(build_conn(), "/api/v1/MT-BLOCKED")
+
+    assert %{
+             "status" => "blocked",
+             "last_error" => "codex turn requires operator input",
+             "blocked" => %{
+               "session_id" => "thread-blocked",
+               "state" => "In Progress",
+               "error" => "codex turn requires operator input"
+             }
+           } = json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-MISSING")
 
@@ -544,7 +570,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Operations Dashboard"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
+    assert html =~ "MT-BLOCKED"
     assert html =~ "rendered"
+    assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
@@ -643,7 +671,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 0}
+    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 1}
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -711,6 +739,25 @@ defmodule SymphonyElixir.ExtensionsTest do
           attempt: 2,
           due_in_ms: 2_000,
           error: "boom"
+        }
+      ],
+      blocked: [
+        %{
+          issue_id: "issue-blocked",
+          identifier: "MT-BLOCKED",
+          state: "In Progress",
+          error: "codex turn requires operator input",
+          worker_host: "dm-dev2",
+          workspace_path: "/workspaces/MT-BLOCKED",
+          session_id: "thread-blocked",
+          blocked_at: DateTime.utc_now(),
+          last_codex_event: :turn_input_required,
+          last_codex_message: %{
+            event: :turn_input_required,
+            message: %{"method" => "turn/input_required"},
+            timestamp: DateTime.utc_now()
+          },
+          last_codex_timestamp: DateTime.utc_now()
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},

@@ -198,16 +198,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
-    Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+    if input_required_blocker?(running_entry) do
+      block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
+    else
+      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
-    state
-    |> complete_issue(issue_id)
-    |> schedule_issue_retry(issue_id, 1, %{
-      identifier: running_entry.identifier,
-      delay_type: :continuation,
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
-    })
+      state
+      |> complete_issue(issue_id)
+      |> schedule_issue_retry(issue_id, 1, %{
+        identifier: running_entry.identifier,
+        delay_type: :continuation,
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    end
   end
 
   defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
@@ -564,8 +568,16 @@ defmodule SymphonyElixir.Orchestrator do
         now = DateTime.utc_now()
 
         Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
-          restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
+          maybe_restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
         end)
+    end
+  end
+
+  defp maybe_restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
+    if Map.has_key?(state.blocked, issue_id) do
+      state
+    else
+      restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)
     end
   end
 
@@ -621,31 +633,61 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp input_required_blocker?(running_entry) when is_map(running_entry) do
     Map.get(running_entry, :last_codex_event) in [:turn_input_required, :approval_required] or
+      not is_nil(input_required_completion_outcome(Map.get(running_entry, :completion))) or
       codex_message_method(Map.get(running_entry, :last_codex_message)) ==
         "mcpServer/elicitation/request"
   end
 
   defp input_required_blocker?(_running_entry), do: false
 
-  defp blocker_error(running_entry, fallback) when is_map(running_entry) do
-    case Map.get(running_entry, :last_codex_event) do
-      :turn_input_required ->
-        "codex turn requires operator input"
+  defp input_required_completion_outcome(completion) when is_map(completion) do
+    outcome = Map.get(completion, :outcome) || Map.get(completion, "outcome")
+    normalize_input_required_outcome(outcome)
+  end
 
-      :approval_required ->
-        "codex turn requires approval"
+  defp input_required_completion_outcome(_completion), do: nil
 
-      _ ->
-        if codex_message_method(Map.get(running_entry, :last_codex_message)) ==
-             "mcpServer/elicitation/request" do
-          "codex MCP elicitation requires operator input"
-        else
-          fallback
-        end
+  defp normalize_input_required_outcome(outcome)
+       when outcome in [:input_required, :needs_input, :approval_required],
+       do: outcome
+
+  defp normalize_input_required_outcome(outcome) when is_binary(outcome) do
+    case outcome do
+      "input_required" -> :input_required
+      "needs_input" -> :needs_input
+      "approval_required" -> :approval_required
+      _ -> nil
     end
   end
 
+  defp normalize_input_required_outcome(_outcome), do: nil
+
+  defp blocker_error(running_entry, fallback) when is_map(running_entry) do
+    codex_event_blocker_error(Map.get(running_entry, :last_codex_event)) ||
+      completion_blocker_error(Map.get(running_entry, :completion)) ||
+      codex_message_blocker_error(Map.get(running_entry, :last_codex_message)) ||
+      fallback
+  end
+
   defp blocker_error(_running_entry, fallback), do: fallback
+
+  defp codex_event_blocker_error(:turn_input_required), do: "codex turn requires operator input"
+  defp codex_event_blocker_error(:approval_required), do: "codex turn requires approval"
+  defp codex_event_blocker_error(_event), do: nil
+
+  defp completion_blocker_error(completion) do
+    case input_required_completion_outcome(completion) do
+      outcome when outcome in [:input_required, :needs_input] -> "codex turn requires operator input"
+      :approval_required -> "codex turn requires approval"
+      nil -> nil
+    end
+  end
+
+  defp codex_message_blocker_error(message) do
+    if codex_message_method(message) == "mcpServer/elicitation/request" do
+      "codex MCP elicitation requires operator input"
+    end
+  end
 
   defp codex_message_method(%{message: %{"method" => method}}) when is_binary(method), do: method
   defp codex_message_method(%{message: %{method: method}}) when is_binary(method), do: method
