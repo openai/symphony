@@ -80,7 +80,11 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    session_opts =
+      [worker_host: worker_host]
+      |> maybe_put_thread_id(Keyword.get(opts, :thread_id))
+
+    with {:ok, session} <- AppServer.start_session(workspace, session_opts) do
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
@@ -130,18 +134,23 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    human_comments = Keyword.get(opts, :human_comments, [])
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
-    """
-    Continuation guidance:
+    cond do
+      is_binary(Keyword.get(opts, :prompt)) ->
+        Keyword.fetch!(opts, :prompt)
 
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
-    - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
-    - Resume from the current workspace and workpad state instead of restarting from scratch.
-    - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
-    - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
-    """
+      is_list(human_comments) and human_comments != [] ->
+        PromptBuilder.build_human_followup_prompt(issue, human_comments)
+
+      true ->
+        PromptBuilder.build_prompt(issue, opts)
+    end
+  end
+
+  defp build_turn_prompt(issue, _opts, turn_number, max_turns) do
+    PromptBuilder.build_continuation_prompt(issue, turn_number, max_turns)
   end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
@@ -190,6 +199,12 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
+
+  defp maybe_put_thread_id(opts, thread_id) when is_binary(thread_id) and thread_id != "" do
+    Keyword.put(opts, :thread_id, thread_id)
+  end
+
+  defp maybe_put_thread_id(opts, _thread_id), do: opts
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name

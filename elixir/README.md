@@ -16,7 +16,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 1. Polls Linear for candidate work
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
+   workspace, or connects to an existing app-server through `codex app-server proxy`
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
@@ -24,12 +24,19 @@ During app-server sessions, Symphony also serves a client-side `linear_graphql` 
 skills can make raw Linear GraphQL calls.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+Symphony stops the active agent for that issue, archives the matching Codex thread when known, and
+cleans up matching workspaces.
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
-entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
-Linear issue can become a dispatch candidate again after restart.
+entries keep the Codex `thread_id`, workspace path, and a Linear comment cursor. Symphony posts a
+marked "Codex needs input" comment on the issue when possible. When a new non-workpad Linear
+comment appears after the cursor, Symphony resumes the same Codex thread and worktree with that
+comment as fresh human input.
+
+Linear comments added while a turn is actively running are queued in memory and included in the
+next retry/continuation that Symphony starts. The Codex app remains the rich console for taking over
+directly; Linear is the async conversation surface for issue-specific feedback.
 
 ## How to use it
 
@@ -105,6 +112,9 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+  model: gpt-5
+  reasoning_effort: high
+  service_tier: fast
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -121,6 +131,12 @@ Notes:
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
+- Optional `codex.model`, `codex.reasoning_effort`, and `codex.service_tier` values are sent on
+  `thread/start` or `turn/start`, which is useful when `codex.command` is a proxy to an already
+  running shared app-server and cannot rely on CLI `--config` flags.
+- Set `codex.attach_worktree_owner: true` for local Git workspaces to write Codex's
+  `codex-thread.json` owner metadata after `thread/start`; this lets the Codex app associate the
+  worktree with the created thread.
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.
@@ -147,7 +163,16 @@ hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
 codex:
-  command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
+  command: codex app-server proxy --sock "${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock"
+  model: gpt-5.5
+  reasoning_effort: xhigh
+  service_tier: fast
+  approval_policy: never
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy:
+    type: dangerFullAccess
+  attach_worktree_owner: true
+  read_timeout_ms: 60000
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.

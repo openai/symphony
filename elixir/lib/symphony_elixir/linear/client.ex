@@ -4,13 +4,14 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Linear.{Comment, Issue}
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
 
   @query """
-  query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+  query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $commentFirst: Int!, $after: String) {
     issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
       nodes {
         id
@@ -43,6 +44,18 @@ defmodule SymphonyElixir.Linear.Client do
             }
           }
         }
+        comments(first: $commentFirst) {
+          nodes {
+            id
+            body
+            createdAt
+            updatedAt
+            user {
+              id
+              name
+            }
+          }
+        }
         createdAt
         updatedAt
       }
@@ -55,7 +68,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @query_by_ids """
-  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
+  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!, $commentFirst: Int!) {
     issues(filter: {id: {in: $ids}}, first: $first) {
       nodes {
         id
@@ -85,6 +98,18 @@ defmodule SymphonyElixir.Linear.Client do
               state {
                 name
               }
+            }
+          }
+        }
+        comments(first: $commentFirst) {
+          nodes {
+            id
+            body
+            createdAt
+            updatedAt
+            user {
+              id
+              name
             }
           }
         }
@@ -247,6 +272,7 @@ defmodule SymphonyElixir.Linear.Client do
              stateNames: state_names,
              first: @issue_page_size,
              relationFirst: @issue_page_size,
+             commentFirst: @issue_page_size,
              after: after_cursor
            }),
          {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
@@ -294,7 +320,8 @@ defmodule SymphonyElixir.Linear.Client do
     case graphql_fun.(@query_by_ids, %{
            ids: batch_ids,
            first: length(batch_ids),
-           relationFirst: @issue_page_size
+           relationFirst: @issue_page_size,
+           commentFirst: @issue_page_size
          }) do
       {:ok, body} ->
         with {:ok, issues} <- decode_linear_response(body, assignee_filter) do
@@ -459,6 +486,7 @@ defmodule SymphonyElixir.Linear.Client do
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
       blocked_by: extract_blockers(issue),
+      comments: extract_comments(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
       created_at: parse_datetime(issue["createdAt"]),
@@ -546,6 +574,32 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_labels(_), do: []
+
+  defp extract_comments(%{"comments" => %{"nodes" => comments}}) when is_list(comments) do
+    comments
+    |> Enum.map(&normalize_comment/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(fn %Comment{} = comment ->
+      {comment.created_at && DateTime.to_unix(comment.created_at, :microsecond), comment.id || ""}
+    end)
+  end
+
+  defp extract_comments(_), do: []
+
+  defp normalize_comment(comment) when is_map(comment) do
+    user = comment["user"]
+
+    %Comment{
+      id: comment["id"],
+      body: comment["body"],
+      author_id: assignee_field(user, "id"),
+      author_name: assignee_field(user, "name"),
+      created_at: parse_datetime(comment["createdAt"]),
+      updated_at: parse_datetime(comment["updatedAt"])
+    }
+  end
+
+  defp normalize_comment(_comment), do: nil
 
   defp extract_blockers(%{"inverseRelations" => %{"nodes" => inverse_relations}})
        when is_list(inverse_relations) do

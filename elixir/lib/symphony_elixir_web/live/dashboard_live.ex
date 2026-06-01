@@ -169,6 +169,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <div class="session-stack">
+                        <%= if entry.codex_thread_url do %>
+                          <a class="subtle-button" href={entry.codex_thread_url}>Open thread</a>
+                          <button
+                            type="button"
+                            class="subtle-button"
+                            data-label="Copy thread"
+                            data-copy={entry.thread_id}
+                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                          >
+                            Copy thread
+                          </button>
+                        <% end %>
                         <%= if entry.session_id do %>
                           <button
                             type="button"
@@ -249,6 +261,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </span>
                     </td>
                     <td>
+                      <%= if entry.codex_thread_url do %>
+                        <a class="subtle-button" href={entry.codex_thread_url}>Open thread</a>
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          data-label="Copy thread"
+                          data-copy={entry.thread_id}
+                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                        >
+                          Copy thread
+                        </button>
+                      <% end %>
                       <%= if entry.session_id do %>
                         <button
                           type="button"

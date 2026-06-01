@@ -107,6 +107,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
+      thread_id: Map.get(entry, :thread_id),
+      codex_thread_url: codex_thread_url(Map.get(entry, :thread_id)),
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
@@ -128,7 +130,9 @@ defmodule SymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      thread_id: Map.get(entry, :thread_id),
+      codex_thread_url: codex_thread_url(Map.get(entry, :thread_id))
     }
   end
 
@@ -141,6 +145,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
+      thread_id: Map.get(entry, :thread_id),
+      codex_thread_url: codex_thread_url(Map.get(entry, :thread_id)),
       blocked_at: iso8601(entry.blocked_at),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
@@ -153,6 +159,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
       session_id: running.session_id,
+      thread_id: Map.get(running, :thread_id),
+      codex_thread_url: codex_thread_url(Map.get(running, :thread_id)),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
@@ -173,7 +181,9 @@ defmodule SymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      thread_id: Map.get(retry, :thread_id),
+      codex_thread_url: codex_thread_url(Map.get(retry, :thread_id))
     }
   end
 
@@ -182,6 +192,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(blocked, :worker_host),
       workspace_path: Map.get(blocked, :workspace_path),
       session_id: blocked.session_id,
+      thread_id: Map.get(blocked, :thread_id),
+      codex_thread_url: codex_thread_url(Map.get(blocked, :thread_id)),
       state: blocked.state,
       error: blocked.error,
       blocked_at: iso8601(blocked.blocked_at),
@@ -219,6 +231,9 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp codex_thread_url(thread_id) when is_binary(thread_id), do: "codex://threads/#{thread_id}"
+  defp codex_thread_url(_thread_id), do: nil
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

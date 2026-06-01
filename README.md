@@ -7,6 +7,10 @@ work instead of supervising coding agents.
 
 _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
 
+The reference implementation can also keep the Codex thread attached to the issue lifecycle: it
+surfaces thread links, resumes from human Linear comments, and archives threads after terminal
+issues are cleaned up.
+
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 

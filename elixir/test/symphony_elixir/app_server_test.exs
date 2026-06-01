@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
+  import Bitwise
 
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
@@ -156,6 +157,9 @@ defmodule SymphonyElixir.AppServerTest do
         write_workflow_file!(Workflow.workflow_file_path(),
           workspace_root: workspace_root,
           codex_command: "#{codex_binary} app-server",
+          codex_model: "gpt-5.5",
+          codex_reasoning_effort: "xhigh",
+          codex_service_tier: "fast",
           codex_turn_sandbox_policy: configured_policy
         )
 
@@ -171,13 +175,260 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
                    |> then(fn payload ->
                      payload["method"] == "turn/start" &&
-                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy
+                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy &&
+                       get_in(payload, ["params", "model"]) == "gpt-5.5" &&
+                       get_in(payload, ["params", "effort"]) == "xhigh" &&
+                       get_in(payload, ["params", "serviceTier"]) == "fast" &&
+                       get_in(payload, ["params", "collaborationMode", "settings", "model"]) == "gpt-5.5" &&
+                       get_in(payload, ["params", "collaborationMode", "settings", "reasoning_effort"]) == "xhigh"
                    end)
                  else
                    false
                  end
                end)
       end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server can attach Codex worktree owner metadata" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-worktree-owner-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-OWNER")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-worktree-owner.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      git = System.find_executable("git") || flunk("git is required for this test")
+      {_output, 0} = System.cmd(git, ["init", workspace], stderr_to_stdout: true)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-worktree-owner.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-owner"}}}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_attach_worktree_owner: true
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+      AppServer.stop_session(session)
+
+      assert %{"version" => 1, "ownerThreadId" => "thread-owner"} =
+               workspace
+               |> Path.join(".git/codex-thread.json")
+               |> File.read!()
+               |> Jason.decode!()
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server archives an existing thread" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-archive-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-ARCHIVE")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-archive.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-archive.trace}"
+
+      while IFS= read -r line; do
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$line" in
+          *'"method":"initialize"'*)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          *'"method":"thread/archive"'*)
+            printf '%s\\n' '{"id":4,"result":{}}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert :ok = AppServer.archive_thread("thread-archive", workspace: workspace)
+
+      trace = File.read!(trace_file)
+
+      assert trace =~ ~s("method":"thread/archive")
+      assert trace =~ ~s("threadId":"thread-archive")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server can attach a session to an existing thread" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-existing-thread-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-EXISTING")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-existing.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-existing.trace}"
+
+      while IFS= read -r line; do
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$line" in
+          *'"method":"initialize"'*)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          *'"method":"thread/start"'*)
+            printf '%s\\n' '{"id":2,"error":{"message":"unexpected thread/start"}}'
+            exit 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace, thread_id: "thread-existing")
+      assert session.thread_id == "thread-existing"
+      AppServer.stop_session(session)
+
+      trace = File.read!(trace_file)
+      assert trace =~ ~s("method":"initialize")
+      refute trace =~ ~s("method":"thread/start")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server proxy command connects to shared server over websocket unix socket" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-websocket-proxy-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-WEBSOCKET")
+      socket_path = Path.join(test_root, "app-server.sock")
+      parent = self()
+
+      File.mkdir_p!(workspace)
+
+      {:ok, listener} =
+        :gen_tcp.listen(0, [
+          :binary,
+          active: false,
+          ifaddr: {:local, socket_path},
+          packet: :raw
+        ])
+
+      server = Task.async(fn -> websocket_test_server(listener, parent) end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "codex app-server proxy --sock \"#{socket_path}\""
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+      assert session.thread_id == "thread-ws"
+
+      AppServer.stop_session(session)
+      Task.shutdown(server, :brutal_kill)
+
+      assert_receive {:ws_server_payload, %{"method" => "initialize"}}, 1_000
+      assert_receive {:ws_server_payload, %{"method" => "initialized"}}, 1_000
+
+      assert_receive {:ws_server_payload, %{"method" => "thread/start", "params" => %{"cwd" => cwd}}},
+                     1_000
+
+      assert cwd == workspace
     after
       File.rm_rf(test_root)
     end
@@ -1471,5 +1722,154 @@ defmodule SymphonyElixir.AppServerTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp websocket_test_server(listener, parent) do
+    {:ok, socket} = :gen_tcp.accept(listener, 5_000)
+    {:ok, request, buffer} = websocket_test_read_http(socket, "", websocket_test_deadline())
+    key = websocket_test_header(request, "sec-websocket-key")
+    :ok = :gen_tcp.send(socket, websocket_test_handshake_response(key))
+    websocket_test_server_loop(socket, parent, buffer)
+  after
+    :gen_tcp.close(listener)
+  end
+
+  defp websocket_test_deadline do
+    System.monotonic_time(:millisecond) + 5_000
+  end
+
+  defp websocket_test_read_http(socket, buffer, deadline_ms) do
+    case :binary.match(buffer, "\r\n\r\n") do
+      {header_end, 4} ->
+        request = binary_part(buffer, 0, header_end + 4)
+        rest = binary_part(buffer, header_end + 4, byte_size(buffer) - header_end - 4)
+        {:ok, request, rest}
+
+      :nomatch ->
+        timeout_ms = max(deadline_ms - System.monotonic_time(:millisecond), 0)
+        {:ok, chunk} = :gen_tcp.recv(socket, 0, timeout_ms)
+        websocket_test_read_http(socket, buffer <> chunk, deadline_ms)
+    end
+  end
+
+  defp websocket_test_header(request, name) do
+    request
+    |> String.split("\r\n", trim: true)
+    |> Enum.find_value(&websocket_test_header_value(&1, name))
+  end
+
+  defp websocket_test_header_value(line, name) do
+    case String.split(line, ":", parts: 2) do
+      [header_name, value] ->
+        if String.downcase(header_name) == name, do: String.trim(value)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp websocket_test_handshake_response(key) do
+    accept =
+      :crypto.hash(:sha, key <> "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+      |> Base.encode64()
+
+    [
+      "HTTP/1.1 101 Switching Protocols\r\n",
+      "Upgrade: websocket\r\n",
+      "Connection: Upgrade\r\n",
+      "Sec-WebSocket-Accept: ",
+      accept,
+      "\r\n",
+      "\r\n"
+    ]
+  end
+
+  defp websocket_test_server_loop(socket, parent, buffer) do
+    case websocket_test_decode_frame(buffer) do
+      {:ok, %{opcode: 0x8}, _rest} ->
+        :gen_tcp.close(socket)
+
+      {:ok, %{opcode: opcode, payload: payload}, rest} when opcode in [0x1, 0x2] ->
+        decoded = Jason.decode!(payload)
+        send(parent, {:ws_server_payload, decoded})
+        maybe_send_websocket_test_response(socket, decoded)
+        websocket_test_server_loop(socket, parent, rest)
+
+      {:ok, _frame, rest} ->
+        websocket_test_server_loop(socket, parent, rest)
+
+      :more ->
+        {:ok, chunk} = :gen_tcp.recv(socket, 0, 5_000)
+        websocket_test_server_loop(socket, parent, buffer <> chunk)
+    end
+  end
+
+  defp maybe_send_websocket_test_response(socket, %{"id" => id, "method" => "initialize"}) do
+    :ok = :gen_tcp.send(socket, websocket_test_server_frame(Jason.encode!(%{"id" => id, "result" => %{}})))
+  end
+
+  defp maybe_send_websocket_test_response(socket, %{"id" => id, "method" => "thread/start"}) do
+    response = %{"id" => id, "result" => %{"thread" => %{"id" => "thread-ws"}}}
+    :ok = :gen_tcp.send(socket, websocket_test_server_frame(Jason.encode!(response)))
+  end
+
+  defp maybe_send_websocket_test_response(_socket, _payload), do: :ok
+
+  defp websocket_test_server_frame(payload) do
+    length = byte_size(payload)
+
+    cond do
+      length < 126 -> <<0x81, length>> <> payload
+      length <= 65_535 -> <<0x81, 126, length::16>> <> payload
+      true -> <<0x81, 127, length::64>> <> payload
+    end
+  end
+
+  defp websocket_test_decode_frame(buffer) when byte_size(buffer) < 2, do: :more
+
+  defp websocket_test_decode_frame(<<first, second, rest::binary>>) do
+    opcode = first &&& 0x0F
+    masked? = (second &&& 0x80) == 0x80
+    length_code = second &&& 0x7F
+
+    with {:ok, length, rest_after_length} <- websocket_test_payload_length(length_code, rest),
+         {:ok, mask_key, rest_after_mask} <- websocket_test_mask_key(masked?, rest_after_length),
+         true <- byte_size(rest_after_mask) >= length do
+      <<payload::binary-size(length), remaining::binary>> = rest_after_mask
+
+      payload =
+        if masked? do
+          websocket_test_mask_payload(payload, mask_key)
+        else
+          payload
+        end
+
+      {:ok, %{opcode: opcode, payload: payload}, remaining}
+    else
+      false -> :more
+      :more -> :more
+    end
+  end
+
+  defp websocket_test_payload_length(length, rest) when length < 126, do: {:ok, length, rest}
+  defp websocket_test_payload_length(126, <<length::16, rest::binary>>), do: {:ok, length, rest}
+  defp websocket_test_payload_length(126, _rest), do: :more
+  defp websocket_test_payload_length(127, <<length::64, rest::binary>>), do: {:ok, length, rest}
+  defp websocket_test_payload_length(127, _rest), do: :more
+
+  defp websocket_test_mask_key(false, rest), do: {:ok, nil, rest}
+  defp websocket_test_mask_key(true, <<mask_key::binary-size(4), rest::binary>>), do: {:ok, mask_key, rest}
+  defp websocket_test_mask_key(true, _rest), do: :more
+
+  defp websocket_test_mask_payload(payload, nil), do: payload
+
+  defp websocket_test_mask_payload(payload, <<a, b, c, d>>) do
+    mask = {a, b, c, d}
+
+    payload
+    |> :binary.bin_to_list()
+    |> Enum.with_index()
+    |> Enum.map(fn {byte, index} -> bxor(byte, elem(mask, rem(index, 4))) end)
+    |> :binary.list_to_bin()
   end
 end
