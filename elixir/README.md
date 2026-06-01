@@ -132,7 +132,19 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.kind` supports `linear`, `jira`, and `memory`.
+- `tracker.api_key` reads from `LINEAR_API_KEY` for Linear and `JIRA_API_TOKEN`/`JIRA_API_KEY`
+  for Jira when unset or when configured as an env reference such as `$JIRA_API_TOKEN`.
+- For Jira:
+  - `tracker.endpoint` is the Jira Cloud site URL, for example `https://example.atlassian.net`;
+    it may also be provided through `JIRA_ENDPOINT` or `JIRA_BASE_URL`.
+  - `tracker.project_slug` is the Jira project key.
+  - `tracker.active_states` and `tracker.terminal_states` are Jira status names.
+  - `tracker.api_key` may be a full `Bearer ...` or `Basic ...` Authorization value. Raw tokens
+    are sent as bearer tokens.
+  - Symphony reads and upserts a durable claim lease marker in issue comments before dispatching.
+    When the marker comment already exists, Jira comment edit APIs are used instead of appending
+    repeated heartbeat comments.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the

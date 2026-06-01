@@ -4,6 +4,8 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias SymphonyElixir.Jira.Adapter, as: JiraAdapter
+  alias SymphonyElixir.Jira.Client, as: JiraClient
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -36,6 +38,40 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule FakeJiraClient do
+    alias SymphonyElixir.Tracker.ClaimLease
+
+    def fetch_candidate_issues do
+      send(self(), :jira_fetch_candidate_issues_called)
+      {:ok, [:jira_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:jira_fetch_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:jira_fetch_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:jira_create_comment_called, issue_id, body})
+      :ok
+    end
+
+    def upsert_claim_lease(issue_id, lease_attrs) do
+      send(self(), {:jira_upsert_claim_lease_called, issue_id, lease_attrs})
+      {:ok, ClaimLease.new(Map.put(lease_attrs, :issue_id, issue_id))}
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:jira_update_issue_state_called, issue_id, state_name})
+      :ok
     end
   end
 
@@ -193,8 +229,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
+
+    assert {:ok, %ClaimLease{issue_id: "issue-1", holder: "holder-1"}} =
+             SymphonyElixir.Tracker.upsert_claim_lease("issue-1", %{holder: "holder-1"})
+
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
+    assert_receive {:memory_tracker_claim_lease, "issue-1", %ClaimLease{holder: "holder-1"}}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
@@ -203,6 +244,15 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://example.atlassian.net",
+      tracker_api_token: "jira-token",
+      tracker_project_slug: "SD"
+    )
+
+    assert SymphonyElixir.Tracker.adapter() == JiraAdapter
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -317,6 +367,214 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+    assert {:ok, nil} = Adapter.upsert_claim_lease("issue-1", %{holder: "holder"})
+  end
+
+  test "jira adapter delegates to configured client module" do
+    Application.put_env(:symphony_elixir, :jira_client_module, FakeJiraClient)
+
+    assert {:ok, [:jira_candidate]} = JiraAdapter.fetch_candidate_issues()
+    assert_receive :jira_fetch_candidate_issues_called
+
+    assert {:ok, ["Triaged"]} = JiraAdapter.fetch_issues_by_states(["Triaged"])
+    assert_receive {:jira_fetch_issues_by_states_called, ["Triaged"]}
+
+    assert {:ok, ["SD-1"]} = JiraAdapter.fetch_issue_states_by_ids(["SD-1"])
+    assert_receive {:jira_fetch_issue_states_by_ids_called, ["SD-1"]}
+
+    assert :ok = JiraAdapter.create_comment("SD-1", "hello")
+    assert_receive {:jira_create_comment_called, "SD-1", "hello"}
+
+    assert {:ok, %ClaimLease{issue_id: "SD-1", holder: "holder"}} =
+             JiraAdapter.upsert_claim_lease("SD-1", %{holder: "holder"})
+
+    assert_receive {:jira_upsert_claim_lease_called, "SD-1", %{holder: "holder"}}
+
+    assert :ok = JiraAdapter.update_issue_state("SD-1", "Done")
+    assert_receive {:jira_update_issue_state_called, "SD-1", "Done"}
+  end
+
+  test "jira adapter fetches active issues with readable claim lease markers" do
+    marker_started_at = ~U[2026-05-29 18:00:00Z]
+    marker_expires_at = ~U[2026-05-29 18:10:00Z]
+
+    marker_body =
+      ClaimLease.render(%{
+        holder: "remote-holder",
+        issue_id: "10001",
+        issue_identifier: "SD-1",
+        started_at: marker_started_at,
+        refreshed_at: marker_started_at,
+        expires_at: marker_expires_at,
+        attempt: 1
+      })
+
+    request_recipient = self()
+
+    Application.put_env(:symphony_elixir, :jira_request_fun, fn
+      :get, "/search", opts, _tracker ->
+        send(request_recipient, {:jira_request, :get, "/search", opts})
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "issues" => [jira_issue_payload("10001", "SD-1", "In Progress")],
+             "startAt" => 0,
+             "maxResults" => 50,
+             "total" => 1
+           }
+         }}
+
+      :get, "/issue/SD-1/comment", opts, _tracker ->
+        send(request_recipient, {:jira_request, :get, "/issue/SD-1/comment", opts})
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "comments" => [%{"id" => "comment-1", "body" => jira_marker_adf(marker_body)}],
+             "startAt" => 0,
+             "maxResults" => 100,
+             "total" => 1
+           }
+         }}
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://example.atlassian.net",
+      tracker_api_token: "Bearer jira-token",
+      tracker_project_slug: "SD"
+    )
+
+    assert {:ok, [issue]} = JiraAdapter.fetch_candidate_issues()
+    assert issue.id == "10001"
+    assert issue.identifier == "SD-1"
+    assert issue.state == "In Progress"
+    assert %ClaimLease{} = issue.claim_lease
+    assert issue.claim_lease.comment_id == "comment-1"
+    assert issue.claim_lease.holder == "remote-holder"
+    assert issue.claim_lease.expires_at == marker_expires_at
+
+    assert_receive {:jira_request, :get, "/search", search_opts}
+    assert search_opts[:params].jql =~ ~s(project = "SD")
+    assert search_opts[:params].jql =~ "status in (\"Todo\", \"In Progress\")"
+    assert_receive {:jira_request, :get, "/issue/SD-1/comment", _comment_opts}
+  end
+
+  test "jira adapter updates existing claim lease marker comments idempotently" do
+    existing_marker =
+      ClaimLease.render(%{
+        holder: "old-holder",
+        issue_id: "SD-1",
+        issue_identifier: "SD-1",
+        started_at: ~U[2026-05-29 18:00:00Z],
+        refreshed_at: ~U[2026-05-29 18:00:00Z],
+        expires_at: ~U[2026-05-29 18:10:00Z]
+      })
+
+    request_recipient = self()
+
+    Application.put_env(:symphony_elixir, :jira_request_fun, fn
+      :get, "/issue/SD-1/comment", opts, _tracker ->
+        send(request_recipient, {:jira_request, :get, "/issue/SD-1/comment", opts})
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{
+             "comments" => [%{"id" => "comment-1", "body" => jira_marker_adf(existing_marker)}],
+             "startAt" => 0,
+             "maxResults" => 100,
+             "total" => 1
+           }
+         }}
+
+      :put, "/issue/SD-1/comment/comment-1", opts, _tracker ->
+        send(request_recipient, {:jira_request, :put, "/issue/SD-1/comment/comment-1", opts})
+        {:ok, %{status: 200, body: %{"id" => "comment-1"}}}
+
+      :post, path, opts, _tracker ->
+        send(request_recipient, {:jira_request, :post, path, opts})
+        {:ok, %{status: 500, body: %{}}}
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://example.atlassian.net",
+      tracker_api_token: "Bearer jira-token",
+      tracker_project_slug: "SD"
+    )
+
+    lease_attrs = %{
+      holder: "local-holder",
+      issue_identifier: "SD-1",
+      started_at: ~U[2026-05-29 18:05:00Z],
+      refreshed_at: ~U[2026-05-29 18:05:00Z],
+      expires_at: ~U[2026-05-29 18:15:00Z],
+      attempt: 2
+    }
+
+    assert {:ok, %ClaimLease{comment_id: "comment-1", holder: "local-holder"}} =
+             JiraAdapter.upsert_claim_lease("SD-1", lease_attrs)
+
+    assert {:ok, %ClaimLease{comment_id: "comment-1", holder: "local-holder"}} =
+             JiraAdapter.upsert_claim_lease("SD-1", lease_attrs)
+
+    assert_receive {:jira_request, :put, "/issue/SD-1/comment/comment-1", first_put_opts}
+    assert_receive {:jira_request, :put, "/issue/SD-1/comment/comment-1", _second_put_opts}
+    refute_received {:jira_request, :post, _path, _opts}
+
+    rendered_marker = first_put_opts[:json]["body"] |> JiraClient.adf_to_text_for_test()
+    assert rendered_marker =~ "local-holder"
+    assert rendered_marker =~ "symphony_claim_lease"
+  end
+
+  test "jira adapter creates a claim lease marker when none exists" do
+    request_recipient = self()
+
+    Application.put_env(:symphony_elixir, :jira_request_fun, fn
+      :get, "/issue/SD-2/comment", opts, _tracker ->
+        send(request_recipient, {:jira_request, :get, "/issue/SD-2/comment", opts})
+
+        {:ok,
+         %{
+           status: 200,
+           body: %{"comments" => [], "startAt" => 0, "maxResults" => 100, "total" => 0}
+         }}
+
+      :post, "/issue/SD-2/comment", opts, _tracker ->
+        send(request_recipient, {:jira_request, :post, "/issue/SD-2/comment", opts})
+        {:ok, %{status: 201, body: %{"id" => "comment-new"}}}
+
+      :put, path, opts, _tracker ->
+        send(request_recipient, {:jira_request, :put, path, opts})
+        {:ok, %{status: 500, body: %{}}}
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://example.atlassian.net",
+      tracker_api_token: "Bearer jira-token",
+      tracker_project_slug: "SD"
+    )
+
+    assert {:ok, %ClaimLease{comment_id: "comment-new", holder: "local-holder"}} =
+             JiraAdapter.upsert_claim_lease("SD-2", %{
+               holder: "local-holder",
+               issue_identifier: "SD-2",
+               started_at: ~U[2026-05-29 18:05:00Z],
+               refreshed_at: ~U[2026-05-29 18:05:00Z],
+               expires_at: ~U[2026-05-29 18:15:00Z]
+             })
+
+    assert_receive {:jira_request, :post, "/issue/SD-2/comment", post_opts}
+    refute_received {:jira_request, :put, _path, _opts}
+
+    rendered_marker = post_opts[:json]["body"] |> JiraClient.adf_to_text_for_test()
+    assert rendered_marker =~ "local-holder"
+    assert rendered_marker =~ "symphony_claim_lease"
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
@@ -700,6 +958,46 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  defp jira_issue_payload(id, key, status_name) do
+    %{
+      "id" => id,
+      "key" => key,
+      "fields" => %{
+        "summary" => "Jira issue #{key}",
+        "description" => %{
+          "type" => "doc",
+          "version" => 1,
+          "content" => [
+            %{
+              "type" => "paragraph",
+              "content" => [%{"type" => "text", "text" => "Jira description"}]
+            }
+          ]
+        },
+        "priority" => %{"name" => "High"},
+        "status" => %{"name" => status_name},
+        "labels" => ["symphony"],
+        "assignee" => %{"accountId" => "account-1"},
+        "created" => "2026-05-29T18:00:00Z",
+        "updated" => "2026-05-29T18:01:00Z"
+      }
+    }
+  end
+
+  defp jira_marker_adf(marker_body) do
+    %{
+      "type" => "doc",
+      "version" => 1,
+      "content" => [
+        %{
+          "type" => "codeBlock",
+          "attrs" => %{"language" => "json"},
+          "content" => [%{"type" => "text", "text" => marker_body}]
+        }
+      ]
+    }
   end
 
   defp start_test_endpoint(overrides) do

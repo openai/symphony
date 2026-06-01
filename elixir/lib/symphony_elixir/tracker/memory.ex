@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Tracker.Memory do
   @behaviour SymphonyElixir.Tracker
 
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Tracker.ClaimLease
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -39,6 +40,18 @@ defmodule SymphonyElixir.Tracker.Memory do
   def create_comment(issue_id, body) do
     send_event({:memory_tracker_comment, issue_id, body})
     :ok
+  end
+
+  @spec upsert_claim_lease(String.t(), map()) ::
+          {:ok, ClaimLease.t() | nil} | {:error, term()}
+  def upsert_claim_lease(issue_id, lease_attrs) do
+    lease =
+      lease_attrs
+      |> Map.put(:issue_id, issue_id)
+      |> ClaimLease.new()
+
+    send_event({:memory_tracker_claim_lease, issue_id, lease})
+    {:ok, lease}
   end
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}

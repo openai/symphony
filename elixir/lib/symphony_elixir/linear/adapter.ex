@@ -58,6 +58,10 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec upsert_claim_lease(String.t(), map()) ::
+          {:ok, SymphonyElixir.Tracker.ClaimLease.t() | nil} | {:error, term()}
+  def upsert_claim_lease(_issue_id, _lease_attrs), do: {:ok, nil}
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do

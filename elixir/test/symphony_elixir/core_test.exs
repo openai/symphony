@@ -2,6 +2,26 @@ defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
   test "config defaults and validation checks" do
+    previous_jira_api_token = System.get_env("JIRA_API_TOKEN")
+    previous_jira_api_key = System.get_env("JIRA_API_KEY")
+    previous_jira_endpoint = System.get_env("JIRA_ENDPOINT")
+    previous_jira_base_url = System.get_env("JIRA_BASE_URL")
+    previous_missing_tracker_endpoint = System.get_env("MISSING_TRACKER_ENDPOINT")
+
+    on_exit(fn ->
+      restore_env("JIRA_API_TOKEN", previous_jira_api_token)
+      restore_env("JIRA_API_KEY", previous_jira_api_key)
+      restore_env("JIRA_ENDPOINT", previous_jira_endpoint)
+      restore_env("JIRA_BASE_URL", previous_jira_base_url)
+      restore_env("MISSING_TRACKER_ENDPOINT", previous_missing_tracker_endpoint)
+    end)
+
+    System.delete_env("JIRA_API_TOKEN")
+    System.delete_env("JIRA_API_KEY")
+    System.delete_env("JIRA_ENDPOINT")
+    System.delete_env("JIRA_BASE_URL")
+    System.delete_env("MISSING_TRACKER_ENDPOINT")
+
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       tracker_project_slug: nil,
@@ -84,8 +104,53 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "codex.thread_sandbox"
 
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_endpoint: "$MISSING_TRACKER_ENDPOINT",
+      tracker_api_token: "token",
+      tracker_project_slug: "project"
+    )
+
+    assert Config.settings!().tracker.endpoint == nil
+    assert :ok = Config.validate!()
+
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: "SD"
+    )
+
+    assert {:error, :missing_jira_api_token} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: nil,
+      tracker_api_token: "jira-token",
+      tracker_project_slug: "SD"
+    )
+
+    assert {:error, :missing_jira_endpoint} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://example.atlassian.net",
+      tracker_api_token: "jira-token",
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_jira_project_key} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://example.atlassian.net",
+      tracker_api_token: "jira-token",
+      tracker_project_slug: "SD"
+    )
+
+    assert :ok = Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -748,6 +813,76 @@ defmodule SymphonyElixir.CoreTest do
     }
 
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
+  end
+
+  test "fresh dispatch skips unexpired external claim leases" do
+    Application.put_env(:symphony_elixir, :claim_lease_holder, "local-holder")
+
+    issue =
+      claim_lease_issue(%{
+        holder: "remote-holder",
+        expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
+      })
+
+    state = %Orchestrator.State{running: %{}, claimed: MapSet.new(), blocked: %{}}
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "expired claim leases are eligible for handoff after restart" do
+    Application.put_env(:symphony_elixir, :claim_lease_holder, "local-holder")
+
+    issue =
+      claim_lease_issue(%{
+        holder: "remote-holder",
+        expires_at: DateTime.add(DateTime.utc_now(), -1, :second)
+      })
+
+    state = %Orchestrator.State{running: %{}, claimed: MapSet.new(), blocked: %{}}
+
+    assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+
+    assert {:ok, ^issue} =
+             Orchestrator.revalidate_issue_for_dispatch_for_test(issue, fn ["issue-lease"] -> {:ok, [issue]} end)
+  end
+
+  test "current holder can continue a still-unexpired claim lease" do
+    Application.put_env(:symphony_elixir, :claim_lease_holder, "local-holder")
+
+    issue =
+      claim_lease_issue(%{
+        holder: "local-holder",
+        expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
+      })
+
+    state = %Orchestrator.State{running: %{}, claimed: MapSet.new(), blocked: %{}}
+
+    assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+
+    assert {:ok, ^issue} =
+             Orchestrator.revalidate_issue_for_dispatch_for_test(issue, fn ["issue-lease"] -> {:ok, [issue]} end)
+  end
+
+  defp claim_lease_issue(lease_attrs) do
+    %Issue{
+      id: "issue-lease",
+      identifier: "SD-LEASE",
+      title: "Lease recovery",
+      state: "In Progress",
+      claim_lease:
+        ClaimLease.new(
+          Map.merge(
+            %{
+              comment_id: "comment-lease",
+              issue_id: "issue-lease",
+              issue_identifier: "SD-LEASE",
+              started_at: DateTime.add(DateTime.utc_now(), -60, :second),
+              refreshed_at: DateTime.utc_now()
+            },
+            lease_attrs
+          )
+        )
+    }
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do

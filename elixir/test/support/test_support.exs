@@ -17,6 +17,7 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.PromptBuilder
       alias SymphonyElixir.StatusDashboard
       alias SymphonyElixir.Tracker
+      alias SymphonyElixir.Tracker.ClaimLease
       alias SymphonyElixir.Workflow
       alias SymphonyElixir.WorkflowStore
       alias SymphonyElixir.Workspace
@@ -43,6 +44,9 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :jira_client_module)
+          Application.delete_env(:symphony_elixir, :jira_request_fun)
+          Application.delete_env(:symphony_elixir, :claim_lease_holder)
           File.rm_rf(workflow_root)
         end)
 

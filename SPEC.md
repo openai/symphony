@@ -168,6 +168,10 @@ Fields:
 - `url` (string or null)
 - `labels` (list of strings)
   - Normalized to lowercase.
+- `claim_lease` (object or null)
+  - Durable tracker comment marker parsed before dispatch when the tracker supports claim leases.
+  - Contains at minimum holder, comment ID, issue ID/key, refreshed timestamp, and expiration
+    timestamp.
 - `blocked_by` (list of blocker refs)
   - Each blocker ref contains:
     - `id` (string or null)
@@ -349,15 +353,19 @@ Fields:
 
 - `kind` (string)
   - REQUIRED for dispatch.
-  - Current supported value: `linear`
+  - Current supported values: `linear`, `jira`
 - `endpoint` (string)
   - Default for `tracker.kind == "linear"`: `https://api.linear.app/graphql`
+  - REQUIRED for `tracker.kind == "jira"`; use the Jira Cloud site URL.
 - `api_key` (string)
   - MAY be a literal token or `$VAR_NAME`.
   - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
+  - Canonical environment variables for `tracker.kind == "jira"`: `JIRA_API_TOKEN`, then
+    `JIRA_API_KEY`.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
   - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - For `tracker.kind == "jira"`, this is the Jira project key and is REQUIRED for dispatch.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
@@ -570,10 +578,13 @@ This section is intentionally redundant so a coding agent can implement the conf
 Extension fields are documented in the extension section that defines them. Core conformance does
 not require recognizing or validating extension fields unless that extension is implemented.
 
-- `tracker.kind`: string, REQUIRED, currently `linear`
-- `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.kind`: string, REQUIRED, currently `linear` or `jira`
+- `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`,
+  REQUIRED Jira Cloud site URL when `tracker.kind=jira`
+- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`,
+  `JIRA_API_TOKEN`/`JIRA_API_KEY` when `tracker.kind=jira`
+- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`, Jira project key when
+  `tracker.kind=jira`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
@@ -1145,6 +1156,11 @@ An implementation MUST support these tracker adapter operations:
 3. `fetch_issue_states_by_ids(issue_ids)`
    - Used for active-run reconciliation.
 
+4. `upsert_claim_lease(issue_id, lease_attrs)`
+   - Trackers that support durable comments MUST update the existing claim lease marker comment
+     when one is present, and create a marker comment only when missing.
+   - The operation SHOULD return the normalized marker data, including the durable comment ID.
+
 ### 11.2 Query Semantics (Linear)
 
 Linear-specific requirements for `tracker.kind == "linear"`:
@@ -1166,6 +1182,18 @@ Important:
 
 A non-Linear implementation MAY change transport details, but the normalized outputs MUST match the
 domain model in Section 4.
+
+### 11.2.1 Query Semantics (Jira)
+
+Jira-specific requirements for `tracker.kind == "jira"`:
+
+- `tracker.endpoint` is the Jira Cloud site URL; the REST API base is `/rest/api/3`.
+- `tracker.project_slug` maps to the Jira project key.
+- Candidate issue queries use Jira active status names through JQL.
+- Issue comments are read before dispatch and claim lease markers are normalized into
+  `issue.claim_lease`.
+- Claim lease upserts prefer `PUT /issue/{issueIdOrKey}/comment/{commentId}` over appending new
+  comments.
 
 ### 11.3 Normalization Rules
 
@@ -1190,6 +1218,12 @@ RECOMMENDED error categories:
 - `linear_graphql_errors`
 - `linear_unknown_payload`
 - `linear_missing_end_cursor` (pagination integrity error)
+- `missing_jira_api_token`
+- `missing_jira_endpoint`
+- `missing_jira_project_key`
+- `jira_api_request` (transport failures)
+- `jira_api_status` (non-2xx HTTP)
+- `jira_unknown_payload`
 
 Orchestrator behavior on tracker errors:
 
@@ -1199,11 +1233,11 @@ Orchestrator behavior on tracker errors:
 
 ### 11.5 Tracker Writes (Important Boundary)
 
-Symphony does not require first-class tracker write APIs in the orchestrator.
+Symphony requires first-class tracker writes only for orchestration-owned claim lease markers.
 
 - Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
   agent using tools defined by the workflow prompt.
-- The service remains a scheduler/runner and tracker reader.
+- The service remains a scheduler/runner and tracker reader outside of claim lease maintenance.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
 - If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
@@ -2083,6 +2117,7 @@ Use the same validation profiles as Section 17:
 - Configurable retry backoff cap (`agent.max_retry_backoff_ms`, default 5m)
 - Reconciliation that stops runs on terminal/non-active tracker states
 - Workspace cleanup for terminal issues (startup sweep + active transition)
+- Durable tracker comment claim leases for adapters that support them
 - Structured logs with `issue_id`, `issue_identifier`, and `session_id`
 - Operator-visible observability (structured logs; OPTIONAL snapshot/status surface)
 
@@ -2095,9 +2130,8 @@ Use the same validation profiles as Section 17:
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
-- TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
-  of only via agent tools.
-- TODO: Add pluggable issue tracker adapters beyond Linear.
+- TODO: Generalize first-class tracker write APIs beyond orchestration claim leases.
+- TODO: Add more pluggable issue tracker adapters beyond Linear and Jira.
 
 ### 18.3 Operational Validation Before Production (RECOMMENDED)
 

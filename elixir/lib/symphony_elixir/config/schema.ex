@@ -368,7 +368,8 @@ defmodule SymphonyElixir.Config.Schema do
   defp finalize_settings(settings) do
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+      | endpoint: resolve_tracker_endpoint(settings.tracker.kind, settings.tracker.endpoint),
+        api_key: resolve_secret_setting(settings.tracker.api_key, tracker_api_key_fallback(settings.tracker.kind)),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
     }
 
@@ -421,6 +422,33 @@ defmodule SymphonyElixir.Config.Schema do
       resolved -> resolved
     end
   end
+
+  defp resolve_tracker_endpoint("jira", value)
+       when value in [nil, "", "https://api.linear.app/graphql"] do
+    fallback = System.get_env("JIRA_ENDPOINT") || System.get_env("JIRA_BASE_URL")
+
+    normalize_secret_value(fallback)
+  end
+
+  defp resolve_tracker_endpoint("jira", value) when is_binary(value) do
+    fallback = System.get_env("JIRA_ENDPOINT") || System.get_env("JIRA_BASE_URL")
+
+    value
+    |> resolve_env_value(fallback)
+    |> normalize_secret_value()
+  end
+
+  defp resolve_tracker_endpoint(_kind, value) when is_binary(value) do
+    value
+    |> resolve_env_value(nil)
+    |> normalize_secret_value()
+  end
+
+  defp tracker_api_key_fallback("jira") do
+    System.get_env("JIRA_API_TOKEN") || System.get_env("JIRA_API_KEY")
+  end
+
+  defp tracker_api_key_fallback(_kind), do: System.get_env("LINEAR_API_KEY")
 
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do
