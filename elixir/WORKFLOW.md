@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "yansen-symphony-b1cf2e8198aa"
+  project_slug: "symphony-0c79b11b75ea"
   active_states:
     - Todo
     - In Progress
@@ -16,39 +16,24 @@ tracker:
 polling:
   interval_ms: 5000
 workspace:
-  root: ~/.codex/worktrees/symphony
+  root: ~/code/symphony-workspaces
 hooks:
-  timeout_ms: 900000
   after_create: |
-    set -eu
-    repo=/home/dev-user/code/openai
-    issue="$(basename "$PWD")"
-    branch="codex/symphony-${issue}"
-
-    git -C "$repo" fetch origin master
-    git -C "$repo" worktree prune
-
-    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
-      git -C "$repo" worktree add "$PWD" "$branch"
-    else
-      git -C "$repo" worktree add -b "$branch" "$PWD" origin/master
+    git clone --depth 1 https://github.com/openai/symphony .
+    if command -v mise >/dev/null 2>&1; then
+      cd elixir && mise trust && mise exec -- mix deps.get
     fi
   before_remove: |
-    git -C /home/dev-user/code/openai worktree remove --force "$PWD" || true
+    cd elixir && mise exec -- mix workspace.before_remove
 agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex app-server proxy --sock "${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock"
-  model: gpt-5.5
-  reasoning_effort: xhigh
-  service_tier: fast
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   approval_policy: never
-  thread_sandbox: danger-full-access
+  thread_sandbox: workspace-write
   turn_sandbox_policy:
-    type: dangerFullAccess
-  attach_worktree_owner: true
-  read_timeout_ms: 60000
+    type: workspaceWrite
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -78,10 +63,9 @@ No description provided.
 
 Instructions:
 
-1. This is an asynchronous orchestration session. Work autonomously, but ask concise questions in Linear when human judgment, missing context, secrets, or permissions are required.
-2. Treat new human Linear comments as fresh instructions for the current thread and worktree. Re-read them before continuing after any pause or continuation.
-3. Only stop early for a true blocker. If blocked, record the question/blocker in the workpad and leave a clear Linear comment that explains exactly what input is needed.
-4. Final message must report completed actions and blockers only.
+1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
+2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
+3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 
 Work only in the provided repository copy. Do not touch any other path.
 
@@ -106,16 +90,15 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
   current issue as `related`, and use `blockedBy` when the follow-up depends on
   the current issue.
 - Move status only when the matching quality bar is met.
-- Operate autonomously end-to-end unless blocked by missing requirements, secrets, permissions, or an explicit human product/technical decision.
+- Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
-- If a human replies in Linear, treat that reply as authoritative follow-up context for the same Codex thread. Update the workpad before resuming implementation.
 
 ## Related skills
 
 - `linear`: interact with Linear.
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/master` before handoff.
+- `pull`: keep branch updated with latest `origin/main` before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
 
 ## Status map
@@ -144,7 +127,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Done` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/master` and restart execution flow as a new attempt.
+   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
@@ -167,7 +150,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 4.  Start work by writing/updating a hierarchical plan in the workpad comment.
 5.  Ensure the workpad includes a compact environment stamp at the top as a code fence line:
     - Format: `<host>:<abs-workdir>@<short-sha>`
-    - Example: `devbox-01:/home/dev-user/.codex/worktrees/symphony/MT-32@7bdde33bc`
+    - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/MT-32@7bdde33bc`
     - Do not include metadata already inferable from Linear issue fields (`issue ID`, `status`, `branch`, `PR link`).
 6.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
     - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
@@ -175,7 +158,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
 7.  Run a principal-style self-review of the plan and refine it in the comment.
 8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run the `pull` skill to sync with latest `origin/master` before any code edits, then record the pull/sync result in the workpad `Notes`.
+9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
     - Include a `pull skill evidence` note with:
       - merge source(s),
       - result (`clean` or `conflicts resolved`),
@@ -234,7 +217,7 @@ Use this only when completion is blocked by missing required tools or missing au
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
-9.  Merge latest `origin/master` into branch, resolve conflicts, and rerun checks.
+9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
@@ -270,7 +253,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing `## Codex Workpad` comment from the issue.
-5. Create a fresh branch from `origin/master`.
+5. Create a fresh branch from `origin/main`.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
    - Create a new bootstrap `## Codex Workpad` comment.
@@ -289,7 +272,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## Guardrails
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/master` and restart from reproduction/planning as if starting fresh.
+- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.

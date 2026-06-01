@@ -34,7 +34,7 @@ defmodule SymphonyElixir.Workspace do
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->
-        {:ok, workspace, empty_directory?(workspace)}
+        {:ok, workspace, false}
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -51,11 +51,7 @@ defmodule SymphonyElixir.Workspace do
         "set -eu",
         remote_shell_assign("workspace", workspace),
         "if [ -d \"$workspace\" ]; then",
-        "  if [ -z \"$(find \"$workspace\" -mindepth 1 -maxdepth 1 -print -quit)\" ]; then",
-        "    created=1",
-        "  else",
-        "    created=0",
-        "  fi",
+        "  created=0",
         "elif [ -e \"$workspace\" ]; then",
         "  rm -rf \"$workspace\"",
         "  mkdir -p \"$workspace\"",
@@ -79,14 +75,6 @@ defmodule SymphonyElixir.Workspace do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp empty_directory?(workspace) do
-    case File.ls(workspace) do
-      {:ok, []} -> true
-      {:ok, _entries} -> false
-      {:error, reason} -> raise File.Error, reason: reason, action: "list directory", path: workspace
     end
   end
 

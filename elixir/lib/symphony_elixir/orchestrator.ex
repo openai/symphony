@@ -8,8 +8,6 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
-  alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.Linear.Comment
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -211,10 +209,7 @@ defmodule SymphonyElixir.Orchestrator do
         identifier: running_entry.identifier,
         delay_type: :continuation,
         worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path),
-        thread_id: running_entry_thread_id(running_entry),
-        comment_cursor: Map.get(running_entry, :comment_cursor),
-        human_comments: Map.get(running_entry, :queued_human_comments, [])
+        workspace_path: Map.get(running_entry, :workspace_path)
       })
     end
   end
@@ -244,10 +239,7 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: running_entry.identifier,
       error: "agent exited: #{inspect(reason)}",
       worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path),
-      thread_id: running_entry_thread_id(running_entry),
-      comment_cursor: Map.get(running_entry, :comment_cursor),
-      human_comments: Map.get(running_entry, :queued_human_comments, [])
+      workspace_path: Map.get(running_entry, :workspace_path)
     })
   end
 
@@ -440,7 +432,6 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Blocked issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; releasing block")
-        archive_issue_thread(Map.get(state.blocked, issue.id))
         cleanup_issue_workspace(issue.identifier, blocked_issue_worker_host(state, issue.id))
         release_issue_claim(state, issue.id)
 
@@ -449,7 +440,7 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
-        maybe_resume_blocked_issue_from_comment(state, issue)
+        refresh_blocked_issue_state(state, issue)
 
       true ->
         Logger.info("Blocked issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; releasing block")
@@ -518,72 +509,21 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
       %{issue: _} = running_entry ->
-        {running_entry, human_comments} = consume_new_human_comments(running_entry, issue)
-        queued_comments = Map.get(running_entry, :queued_human_comments, []) ++ human_comments
-
-        if human_comments != [] do
-          Logger.info("Queued #{length(human_comments)} Linear human comment(s) for active Codex thread: #{issue_context(issue)}")
-        end
-
-        updated_entry =
-          running_entry
-          |> Map.put(:issue, issue)
-          |> Map.put(:queued_human_comments, queued_comments)
-
-        %{state | running: Map.put(state.running, issue.id, updated_entry)}
+        %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: issue})}
 
       _ ->
         state
     end
   end
 
-  defp maybe_resume_blocked_issue_from_comment(%State{} = state, %Issue{} = issue) do
+  defp refresh_blocked_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.blocked, issue.id) do
       %{issue: _} = blocked_entry ->
-        {new_comments, next_cursor} = new_human_comments(blocked_entry, issue)
-
-        cond do
-          new_comments == [] ->
-            updated_entry =
-              blocked_entry
-              |> Map.put(:issue, issue)
-              |> maybe_put_comment_cursor(next_cursor)
-
-            %{state | blocked: Map.put(state.blocked, issue.id, updated_entry)}
-
-          not blocked_issue_resume_slots_available?(state, issue, blocked_entry) ->
-            Logger.debug("Linear human comment received for blocked issue, but no runner slot is available: #{issue_context(issue)}")
-            %{state | blocked: Map.put(state.blocked, issue.id, %{blocked_entry | issue: issue})}
-
-          true ->
-            resume_blocked_issue_from_comments(state, issue, blocked_entry, new_comments, next_cursor)
-        end
+        %{state | blocked: Map.put(state.blocked, issue.id, %{blocked_entry | issue: issue})}
 
       _ ->
         state
     end
-  end
-
-  defp resume_blocked_issue_from_comments(state, issue, blocked_entry, comments, next_cursor) do
-    thread_id = Map.get(blocked_entry, :thread_id)
-
-    Logger.info("Resuming blocked issue from #{length(comments)} Linear human comment(s): #{issue_context(issue)} thread_id=#{thread_id || "n/a"}")
-
-    runner_opts =
-      [
-        thread_id: thread_id,
-        human_comments: comments,
-        comment_cursor: next_cursor
-      ]
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-
-    state
-    |> Map.update!(:blocked, &Map.delete(&1, issue.id))
-    |> dispatch_issue(issue, 1, Map.get(blocked_entry, :worker_host), runner_opts)
-  end
-
-  defp blocked_issue_resume_slots_available?(state, issue, blocked_entry) do
-    dispatch_slots_available?(issue, state) and worker_slots_available?(state, Map.get(blocked_entry, :worker_host))
   end
 
   defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
@@ -595,12 +535,11 @@ defmodule SymphonyElixir.Orchestrator do
         state = record_session_completion_totals(state, running_entry)
         worker_host = Map.get(running_entry, :worker_host)
 
-        stop_running_task(pid, ref)
-
         if cleanup_workspace do
-          archive_issue_thread(running_entry)
           cleanup_issue_workspace(identifier, worker_host)
         end
+
+        stop_running_task(pid, ref)
 
         %{
           state
@@ -666,12 +605,7 @@ defmodule SymphonyElixir.Orchestrator do
         |> terminate_running_issue(issue_id, false)
         |> schedule_issue_retry(issue_id, next_attempt, %{
           identifier: identifier,
-          error: "stalled for #{elapsed_ms}ms without codex activity",
-          worker_host: Map.get(running_entry, :worker_host),
-          workspace_path: Map.get(running_entry, :workspace_path),
-          thread_id: running_entry_thread_id(running_entry),
-          comment_cursor: Map.get(running_entry, :comment_cursor),
-          human_comments: Map.get(running_entry, :queued_human_comments, [])
+          error: "stalled for #{elapsed_ms}ms without codex activity"
         })
       end
     else
@@ -791,8 +725,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
-    maybe_post_blocked_issue_comment(issue_id, running_entry, error)
-
     blocked_entry = %{
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
@@ -800,8 +732,6 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: running_entry_session_id(running_entry),
-      thread_id: running_entry_thread_id(running_entry),
-      comment_cursor: Map.get(running_entry, :comment_cursor) || issue_comment_cursor(Map.get(running_entry, :issue)),
       error: error,
       blocked_at: DateTime.utc_now(),
       last_codex_message: Map.get(running_entry, :last_codex_message),
@@ -960,10 +890,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, runner_opts \\ []) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, runner_opts)
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -980,7 +910,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, runner_opts) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -989,17 +919,13 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, runner_opts)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, runner_opts) do
-    agent_opts =
-      [attempt: attempt, worker_host: worker_host]
-      |> Keyword.merge(runner_opts)
-
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, agent_opts)
+           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1015,9 +941,6 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: nil,
             session_id: nil,
-            thread_id: Keyword.get(runner_opts, :thread_id),
-            comment_cursor: Keyword.get(runner_opts, :comment_cursor) || issue_comment_cursor(issue),
-            queued_human_comments: [],
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
@@ -1092,9 +1015,6 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
-    thread_id = pick_retry_thread_id(previous_retry, metadata)
-    comment_cursor = pick_retry_comment_cursor(previous_retry, metadata)
-    human_comments = pick_retry_human_comments(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1117,10 +1037,7 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path,
-            thread_id: thread_id,
-            comment_cursor: comment_cursor,
-            human_comments: human_comments
+            workspace_path: workspace_path
           })
     }
   end
@@ -1132,10 +1049,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path),
-          thread_id: Map.get(retry_entry, :thread_id),
-          comment_cursor: Map.get(retry_entry, :comment_cursor),
-          human_comments: Map.get(retry_entry, :human_comments, [])
+          workspace_path: Map.get(retry_entry, :workspace_path)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1146,7 +1060,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_issue_states_by_ids([issue_id]) do
+    case Tracker.fetch_candidate_issues() do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
@@ -1172,7 +1086,6 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
-        archive_issue_thread(metadata)
         cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
         {:noreply, release_issue_claim(state, issue_id)}
 
@@ -1189,47 +1102,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
     {:noreply, release_issue_claim(state, issue_id)}
-  end
-
-  defp archive_issue_thread(%{} = metadata) do
-    thread_id = Map.get(metadata, :thread_id)
-    workspace_path = archive_workspace_path(metadata)
-    worker_host = Map.get(metadata, :worker_host)
-    identifier = Map.get(metadata, :identifier) || "unknown"
-
-    if is_binary(thread_id) and is_binary(workspace_path) do
-      case AppServer.archive_thread(thread_id, workspace: workspace_path, worker_host: worker_host) do
-        :ok ->
-          Logger.info("Archived Codex thread for issue_identifier=#{identifier} thread_id=#{thread_id}")
-
-        {:error, reason} ->
-          Logger.warning("Failed to archive Codex thread for issue_identifier=#{identifier} thread_id=#{thread_id}: #{inspect(reason)}")
-      end
-    end
-
-    :ok
-  end
-
-  defp archive_issue_thread(_metadata), do: :ok
-
-  defp archive_workspace_path(%{} = metadata) do
-    case Map.get(metadata, :workspace_path) do
-      workspace_path when is_binary(workspace_path) ->
-        workspace_path
-
-      _ ->
-        case Map.get(metadata, :identifier) do
-          identifier when is_binary(identifier) ->
-            Path.join(Config.settings!().workspace.root, safe_workspace_identifier(identifier))
-
-          _ ->
-            nil
-        end
-    end
-  end
-
-  defp safe_workspace_identifier(identifier) when is_binary(identifier) do
-    String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
   defp cleanup_issue_workspace(identifier, worker_host \\ nil)
@@ -1271,9 +1143,7 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      runner_opts = runner_opts_from_retry_metadata(metadata)
-
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], runner_opts)}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1338,111 +1208,10 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
   end
 
-  defp pick_retry_thread_id(previous_retry, metadata) do
-    metadata[:thread_id] || Map.get(previous_retry, :thread_id)
-  end
-
-  defp pick_retry_comment_cursor(previous_retry, metadata) do
-    metadata[:comment_cursor] || Map.get(previous_retry, :comment_cursor)
-  end
-
-  defp pick_retry_human_comments(previous_retry, metadata) do
-    comments =
-      case metadata[:human_comments] do
-        comments when is_list(comments) -> comments
-        _ -> Map.get(previous_retry, :human_comments, [])
-      end
-
-    Enum.filter(comments, &match?(%Comment{}, &1))
-  end
-
-  defp runner_opts_from_retry_metadata(metadata) when is_map(metadata) do
-    [
-      thread_id: metadata[:thread_id],
-      comment_cursor: metadata[:comment_cursor],
-      human_comments: metadata[:human_comments] || []
-    ]
-    |> Enum.reject(fn
-      {:human_comments, []} -> true
-      {_key, nil} -> true
-      _ -> false
-    end)
-  end
-
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
   defp maybe_put_runtime_value(running_entry, key, value) when is_map(running_entry) do
     Map.put(running_entry, key, value)
-  end
-
-  defp consume_new_human_comments(entry, %Issue{} = issue) when is_map(entry) do
-    {comments, next_cursor} = new_human_comments(entry, issue)
-    updated_entry = maybe_put_comment_cursor(entry, next_cursor)
-
-    {updated_entry, comments}
-  end
-
-  defp new_human_comments(entry, %Issue{comments: comments}) when is_map(entry) and is_list(comments) do
-    cursor = Map.get(entry, :comment_cursor)
-    next_cursor = Comment.cursor_for(comments)
-
-    comments
-    |> Comment.comments_after(cursor)
-    |> Enum.filter(&Comment.human_feedback?/1)
-    |> then(&{&1, next_cursor})
-  end
-
-  defp new_human_comments(_entry, _issue), do: {[], nil}
-
-  defp maybe_put_comment_cursor(entry, nil), do: entry
-  defp maybe_put_comment_cursor(entry, cursor) when is_map(entry) and is_map(cursor), do: Map.put(entry, :comment_cursor, cursor)
-
-  defp issue_comment_cursor(%Issue{comments: comments}) when is_list(comments), do: Comment.cursor_for(comments)
-  defp issue_comment_cursor(_issue), do: nil
-
-  defp maybe_post_blocked_issue_comment(issue_id, running_entry, error) when is_binary(issue_id) and is_map(running_entry) do
-    if tracker_comment_writes_enabled?() do
-      body = blocked_issue_comment_body(running_entry, error)
-
-      case Tracker.create_comment(issue_id, body) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.debug("Failed to post blocked issue comment issue_id=#{issue_id}: #{inspect(reason)}")
-      end
-    end
-  end
-
-  defp maybe_post_blocked_issue_comment(_issue_id, _running_entry, _error), do: :ok
-
-  defp tracker_comment_writes_enabled? do
-    case Config.settings!().tracker do
-      %{kind: "memory"} -> true
-      %{kind: "linear", api_key: token} when is_binary(token) -> true
-      _ -> false
-    end
-  rescue
-    _error -> false
-  end
-
-  defp blocked_issue_comment_body(running_entry, error) do
-    thread_id = running_entry_thread_id(running_entry)
-    thread_line = if is_binary(thread_id), do: "\nCodex thread: codex://threads/#{thread_id}\n", else: "\n"
-    last_message = StatusDashboard.humanize_codex_message(Map.get(running_entry, :last_codex_message))
-
-    """
-    <!-- symphony:needs-input -->
-    ## Codex needs input
-
-    Symphony paused this issue because the Codex thread needs human input.
-    #{thread_line}
-    Reason: #{error}
-    Last event: #{last_message}
-
-    Reply in this Linear issue to resume the same Codex thread and worktree.
-    """
-    |> String.trim()
   end
 
   defp select_worker_host(%State{} = state, preferred_worker_host) do
@@ -1529,11 +1298,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp running_entry_session_id(_running_entry), do: "n/a"
 
-  defp running_entry_thread_id(%{thread_id: thread_id}) when is_binary(thread_id),
-    do: thread_id
-
-  defp running_entry_thread_id(_running_entry), do: nil
-
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
@@ -1593,7 +1357,6 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
-          thread_id: Map.get(metadata, :thread_id),
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
@@ -1617,8 +1380,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           error: Map.get(retry, :error),
           worker_host: Map.get(retry, :worker_host),
-          workspace_path: Map.get(retry, :workspace_path),
-          thread_id: Map.get(retry, :thread_id)
+          workspace_path: Map.get(retry, :workspace_path)
         }
       end)
 
@@ -1632,7 +1394,6 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),
-          thread_id: Map.get(metadata, :thread_id),
           error: Map.get(metadata, :error),
           blocked_at: Map.get(metadata, :blocked_at),
           last_codex_timestamp: Map.get(metadata, :last_codex_timestamp),
@@ -1690,7 +1451,6 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
-        thread_id: thread_id_for_update(Map.get(running_entry, :thread_id), update),
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
@@ -1722,11 +1482,6 @@ defmodule SymphonyElixir.Orchestrator do
     do: session_id
 
   defp session_id_for_update(existing, _update), do: existing
-
-  defp thread_id_for_update(_existing, %{thread_id: thread_id}) when is_binary(thread_id),
-    do: thread_id
-
-  defp thread_id_for_update(existing, _update), do: existing
 
   defp turn_count_for_update(existing_count, existing_session_id, %{
          event: :session_started,

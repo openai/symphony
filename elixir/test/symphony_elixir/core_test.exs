@@ -103,24 +103,12 @@ defmodule SymphonyElixir.CoreTest do
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
-    workspace = Map.get(config, "workspace", %{})
-    assert Map.get(workspace, "root") == "~/.codex/worktrees/symphony"
-
-    codex = Map.get(config, "codex", %{})
-    assert Map.get(codex, "command") =~ "app-server proxy --sock"
-    assert Map.get(codex, "model") == "gpt-5.5"
-    assert Map.get(codex, "reasoning_effort") == "xhigh"
-    assert Map.get(codex, "service_tier") == "fast"
-    assert Map.get(codex, "approval_policy") == "never"
-    assert Map.get(codex, "thread_sandbox") == "danger-full-access"
-    assert Map.get(codex, "attach_worktree_owner") == true
-    assert Map.get(codex, "read_timeout_ms") == 60_000
-
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "repo=/home/dev-user/code/openai"
-    assert Map.get(hooks, "after_create") =~ "worktree add -b \"$branch\" \"$PWD\" origin/master"
-    assert Map.get(hooks, "before_remove") =~ "worktree remove --force \"$PWD\""
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
+    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
+    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
@@ -309,44 +297,16 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-2"
     issue_identifier = "MT-556"
     workspace = Path.join(test_root, issue_identifier)
-    codex_binary = Path.join(test_root, "fake-codex")
-    trace_file = Path.join(test_root, "codex-archive.trace")
-    previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
     try do
-      on_exit(fn -> restore_env("SYMP_TEST_CODEx_TRACE", previous_trace) end)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: test_root,
         tracker_active_states: ["Todo", "In Progress", "In Review"],
-        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
-        codex_command: "#{codex_binary} app-server"
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
       )
 
       File.mkdir_p!(test_root)
       File.mkdir_p!(workspace)
-
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-archive.trace}"
-
-      while IFS= read -r line; do
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-
-        case "$line" in
-          *'"method":"initialize"'*)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          *'"method":"thread/archive"'*)
-            printf '%s\\n' '{"id":4,"result":{}}'
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
 
       agent_pid =
         spawn(fn ->
@@ -362,8 +322,6 @@ defmodule SymphonyElixir.CoreTest do
             ref: nil,
             identifier: issue_identifier,
             issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
-            workspace_path: workspace,
-            thread_id: "thread-terminal",
             started_at: DateTime.utc_now()
           }
         },
@@ -387,10 +345,6 @@ defmodule SymphonyElixir.CoreTest do
       refute MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
       refute File.exists?(workspace)
-
-      trace = File.read!(trace_file)
-      assert trace =~ ~s("method":"thread/archive")
-      assert trace =~ ~s("threadId":"thread-terminal")
     after
       File.rm_rf(test_root)
     end
@@ -798,9 +752,8 @@ defmodule SymphonyElixir.CoreTest do
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    lower_bound_slack_ms = 1_000
 
-    assert remaining_ms >= min_remaining_ms - lower_bound_slack_ms
+    assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
   end
 
@@ -1012,9 +965,9 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
     assert prompt =~ "Current status: In Progress"
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
-    assert prompt =~ "This is an asynchronous orchestration session."
+    assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker"
-    assert prompt =~ "Treat new human Linear comments as fresh instructions"
+    assert prompt =~ "Do not include \"next steps for user\""
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
@@ -1037,56 +990,6 @@ defmodule SymphonyElixir.CoreTest do
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
     assert prompt == "Retry #2"
-  end
-
-  test "prompt builder includes human comments in continuation guidance" do
-    human_comment = %Comment{
-      id: "comment-human",
-      body: "Please take the simpler path.",
-      author_name: "Yansen",
-      created_at: ~U[2026-01-01 00:01:00Z]
-    }
-
-    service_comment = %Comment{
-      id: "comment-workpad",
-      body: "## Codex Workpad\n- Current plan",
-      author_name: "Codex",
-      created_at: ~U[2026-01-01 00:00:00Z]
-    }
-
-    issue = %Issue{
-      id: "issue-commented",
-      identifier: "MT-202",
-      title: "Continue with comments",
-      comments: [service_comment, human_comment]
-    }
-
-    prompt = PromptBuilder.build_continuation_prompt(issue, 2, 5)
-
-    assert prompt =~ "Continuation guidance:"
-    assert prompt =~ "Recent human Linear comments:"
-    assert prompt =~ "From Yansen at 2026-01-01T00:01:00Z:"
-    assert prompt =~ "Please take the simpler path."
-    refute prompt =~ "Codex Workpad"
-  end
-
-  test "prompt builder handles follow-up prompts without human comments" do
-    issue = %Issue{id: "issue-only-service-comment"}
-
-    prompt =
-      PromptBuilder.build_human_followup_prompt(issue, [
-        %Comment{body: "## Codex needs input\nWaiting for user context."}
-      ])
-
-    assert prompt =~ "Human Linear follow-up for issue-only-service-comment"
-    assert prompt =~ "No human comments were included."
-  end
-
-  test "prompt builder omits human comment section when comments are unavailable" do
-    prompt = PromptBuilder.build_continuation_prompt(%{id: "loose-issue"}, 1, 2)
-
-    assert prompt =~ "Continuation guidance:"
-    refute prompt =~ "Recent human Linear comments:"
   end
 
   test "agent runner keeps workspace after successful codex run" do

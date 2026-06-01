@@ -351,8 +351,6 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
-                 "thread_id" => "thread-http",
-                 "codex_thread_url" => "codex://threads/thread-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
@@ -369,9 +367,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
-                 "workspace_path" => nil,
-                 "thread_id" => nil,
-                 "codex_thread_url" => nil
+                 "workspace_path" => nil
                }
              ],
              "blocked" => [
@@ -383,8 +379,6 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
-                 "thread_id" => "thread-blocked",
-                 "codex_thread_url" => "codex://threads/thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
                  "last_message" => "turn blocked: waiting for user input",
@@ -416,8 +410,6 @@ defmodule SymphonyElixir.ExtensionsTest do
                "worker_host" => nil,
                "workspace_path" => nil,
                "session_id" => "thread-http",
-               "thread_id" => "thread-http",
-               "codex_thread_url" => "codex://threads/thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
@@ -446,8 +438,6 @@ defmodule SymphonyElixir.ExtensionsTest do
              "last_error" => "codex turn requires operator input",
              "blocked" => %{
                "session_id" => "thread-blocked",
-               "thread_id" => "thread-blocked",
-               "codex_thread_url" => "codex://threads/thread-blocked",
                "state" => "In Progress",
                "error" => "codex turn requires operator input"
              }
@@ -586,8 +576,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
-    assert html =~ "Open thread"
-    assert html =~ "codex://threads/thread-http"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
@@ -604,7 +592,6 @@ defmodule SymphonyElixir.ExtensionsTest do
           identifier: "MT-HTTP",
           state: "In Progress",
           session_id: "thread-http",
-          thread_id: "thread-http",
           turn_count: 8,
           last_codex_event: :notification,
           last_codex_message: %{
@@ -734,7 +721,6 @@ defmodule SymphonyElixir.ExtensionsTest do
           identifier: "MT-HTTP",
           state: "In Progress",
           session_id: "thread-http",
-          thread_id: "thread-http",
           turn_count: 7,
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
@@ -764,7 +750,6 @@ defmodule SymphonyElixir.ExtensionsTest do
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",
           session_id: "thread-blocked",
-          thread_id: "thread-blocked",
           blocked_at: DateTime.utc_now(),
           last_codex_event: :turn_input_required,
           last_codex_message: %{

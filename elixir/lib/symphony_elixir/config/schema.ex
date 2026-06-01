@@ -158,9 +158,6 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
-      field(:model, :string)
-      field(:reasoning_effort, :string)
-      field(:service_tier, :string)
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -174,7 +171,6 @@ defmodule SymphonyElixir.Config.Schema do
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
-      field(:attach_worktree_owner, :boolean, default: false)
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
@@ -187,13 +183,9 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
-          :model,
-          :reasoning_effort,
-          :service_tier,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
-          :attach_worktree_owner,
           :turn_timeout_ms,
           :read_timeout_ms,
           :stall_timeout_ms

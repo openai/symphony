@@ -21,13 +21,9 @@ defmodule SymphonyElixir.Config do
   """
 
   @type codex_runtime_settings :: %{
-          model: String.t() | nil,
-          reasoning_effort: String.t() | nil,
-          service_tier: String.t() | nil,
           approval_policy: String.t() | map(),
           thread_sandbox: String.t(),
-          turn_sandbox_policy: map(),
-          attach_worktree_owner: boolean()
+          turn_sandbox_policy: map()
         }
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
@@ -110,13 +106,9 @@ defmodule SymphonyElixir.Config do
              Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
         {:ok,
          %{
-           model: settings.codex.model,
-           reasoning_effort: settings.codex.reasoning_effort,
-           service_tier: settings.codex.service_tier,
            approval_policy: settings.codex.approval_policy,
            thread_sandbox: settings.codex.thread_sandbox,
-           turn_sandbox_policy: turn_sandbox_policy,
-           attach_worktree_owner: settings.codex.attach_worktree_owner
+           turn_sandbox_policy: turn_sandbox_policy
          }}
       end
     end

@@ -73,7 +73,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        %{
          event: :session_started,
          session_id: "thread-live-turn-live",
-         thread_id: "thread-live",
          timestamp: now
        }}
     )
@@ -92,7 +91,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
     assert snapshot_entry.session_id == "thread-live-turn-live"
-    assert snapshot_entry.thread_id == "thread-live"
     assert snapshot_entry.turn_count == 1
     assert snapshot_entry.last_codex_timestamp == now
 
@@ -1136,140 +1134,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.blocked[issue_id]
   end
 
-  test "orchestrator resumes a blocked issue in the same Codex thread after a human Linear comment" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-orchestrator-resume-comment-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-resume-comment.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-      File.mkdir_p!(test_root)
-
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-resume-comment.trace}"
-
-      while IFS= read -r line; do
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-
-        case "$line" in
-          *'"method":"initialize"'*)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          *'"method":"thread/start"'*)
-            printf '%s\\n' '{"id":2,"error":{"message":"unexpected thread/start"}}'
-            exit 1
-            ;;
-          *'"method":"turn/start"'*)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-resume"}}}'
-            printf '%s\\n' '{"method":"turn/completed","params":{"turn":{"id":"turn-resume","status":"completed"}}}'
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        tracker_kind: "memory",
-        workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server",
-        poll_interval_ms: 60_000,
-        max_turns: 1
-      )
-
-      Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
-
-      issue_id = "issue-resume-comment"
-      orchestrator_name = Module.concat(__MODULE__, :ResumeCommentOrchestrator)
-      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-      on_exit(fn ->
-        if Process.alive?(pid) do
-          Process.exit(pid, :normal)
-        end
-      end)
-
-      Process.sleep(50)
-
-      old_comment = %Comment{
-        id: "comment-1",
-        body: "Earlier context",
-        author_name: "Yansen",
-        created_at: ~U[2026-01-01 00:00:00Z]
-      }
-
-      new_comment = %Comment{
-        id: "comment-2",
-        body: "Please take another look and use the simpler path.",
-        author_name: "Yansen",
-        created_at: ~U[2026-01-01 00:01:00Z]
-      }
-
-      issue = %Issue{
-        id: issue_id,
-        identifier: "MT-RESUME",
-        title: "Resume from comment",
-        state: "In Progress",
-        comments: [old_comment, new_comment]
-      }
-
-      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
-
-      initial_state = :sys.get_state(pid)
-
-      :sys.replace_state(pid, fn _ ->
-        initial_state
-        |> Map.put(:blocked, %{
-          issue_id => %{
-            issue_id: issue_id,
-            identifier: "MT-RESUME",
-            issue: %{issue | comments: [old_comment]},
-            workspace_path: Path.join(workspace_root, "MT-RESUME"),
-            session_id: "thread-existing-turn-old",
-            thread_id: "thread-existing",
-            comment_cursor: Comment.cursor_for([old_comment]),
-            error: "codex turn requires operator input",
-            blocked_at: DateTime.utc_now(),
-            last_codex_message: nil,
-            last_codex_event: :turn_input_required,
-            last_codex_timestamp: DateTime.utc_now()
-          }
-        })
-        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
-      end)
-
-      send(pid, :tick)
-      wait_for_trace_contains!(trace_file, ~s("method":"turn/start"))
-      Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Done"}])
-      Process.sleep(1_100)
-
-      trace = File.read!(trace_file)
-      assert trace =~ ~s("method":"turn/start")
-      assert trace =~ ~s("threadId":"thread-existing")
-      assert trace =~ "Please take another look"
-      refute trace =~ ~s("method":"thread/start")
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
   test "status dashboard renders offline marker to terminal" do
     rendered =
       ExUnit.CaptureIO.capture_io(fn ->
@@ -1859,20 +1723,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert rendered =~ "app_status=offline"
     refute rendered =~ "Timestamp:"
-  end
-
-  defp wait_for_trace_contains!(trace_file, expected, attempts \\ 40)
-  defp wait_for_trace_contains!(trace_file, expected, 0), do: flunk("timed out waiting for #{expected} in #{trace_file}")
-
-  defp wait_for_trace_contains!(trace_file, expected, attempts) do
-    trace = if File.exists?(trace_file), do: File.read!(trace_file), else: ""
-
-    if String.contains?(trace, expected) do
-      trace
-    else
-      Process.sleep(25)
-      wait_for_trace_contains!(trace_file, expected, attempts - 1)
-    end
   end
 
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do

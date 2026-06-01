@@ -92,30 +92,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  test "workspace reruns after_create hook for stale empty issue directory" do
-    workspace_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-workspace-empty-retry-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      stale_workspace = Path.join(workspace_root, "MT-EMPTY")
-      File.mkdir_p!(stale_workspace)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        hook_after_create: "echo repaired > initialized.txt"
-      )
-
-      assert {:ok, workspace} = Workspace.create_for_issue("MT-EMPTY")
-      assert workspace == stale_workspace
-      assert File.read!(Path.join(workspace, "initialized.txt")) == "repaired\n"
-    after
-      File.rm_rf(workspace_root)
-    end
-  end
-
   test "workspace replaces stale non-directory paths" do
     workspace_root =
       Path.join(
@@ -365,17 +341,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           }
         ]
       },
-      "comments" => %{
-        "nodes" => [
-          %{
-            "id" => "comment-1",
-            "body" => "Please include this context.",
-            "createdAt" => "2026-01-01T01:00:00Z",
-            "updatedAt" => "2026-01-01T01:00:00Z",
-            "user" => %{"id" => "user-1", "name" => "Yansen"}
-          }
-        ]
-      },
       "createdAt" => "2026-01-01T00:00:00Z",
       "updatedAt" => "2026-01-02T00:00:00Z"
     }
@@ -388,7 +353,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
     assert issue.assigned_to_worker
-    assert [%{id: "comment-1", body: "Please include this context.", author_name: "Yansen"}] = issue.comments
   end
 
   test "linear client marks explicitly unassigned issues as not routed to worker" do
@@ -459,19 +423,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Enum.map(issues, & &1.id) == issue_ids
 
-    assert_receive {
-      :fetch_issue_states_page,
-      query,
-      %{ids: ^first_batch_ids, first: 50, relationFirst: 50, commentFirst: 50}
-    }
-
+    assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
     assert query =~ "SymphonyLinearIssuesById"
 
-    assert_receive {
-      :fetch_issue_states_page,
-      ^query,
-      %{ids: ^second_batch_ids, first: 5, relationFirst: 50, commentFirst: 50}
-    }
+    assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do
@@ -772,13 +727,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: nil,
       max_concurrent_agents: nil,
-      codex_model: nil,
-      codex_reasoning_effort: nil,
-      codex_service_tier: nil,
       codex_approval_policy: nil,
       codex_thread_sandbox: nil,
       codex_turn_sandbox_policy: nil,
-      codex_attach_worktree_owner: nil,
       codex_turn_timeout_ms: nil,
       codex_read_timeout_ms: nil,
       codex_stall_timeout_ms: nil,
@@ -794,10 +745,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
     assert config.codex.command == "codex app-server"
-    assert config.codex.model == nil
-    assert config.codex.reasoning_effort == nil
-    assert config.codex.service_tier == nil
-    assert config.codex.attach_worktree_owner == false
 
     assert config.codex.approval_policy == %{
              "reject" => %{
@@ -831,19 +778,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Config.settings!().codex.command ==
              "codex --config 'model=\"gpt-5.5\"' app-server"
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      codex_model: "gpt-5.5",
-      codex_reasoning_effort: "xhigh",
-      codex_service_tier: "fast",
-      codex_attach_worktree_owner: true
-    )
-
-    config = Config.settings!()
-    assert config.codex.model == "gpt-5.5"
-    assert config.codex.reasoning_effort == "xhigh"
-    assert config.codex.service_tier == "fast"
-    assert config.codex.attach_worktree_owner == true
 
     explicit_root =
       Path.join(

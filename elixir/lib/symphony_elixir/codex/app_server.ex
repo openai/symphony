@@ -3,26 +3,19 @@ defmodule SymphonyElixir.Codex.AppServer do
   Minimal client for the Codex app-server JSON-RPC 2.0 stream over stdio.
   """
 
-  import Bitwise
   require Logger
   alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
 
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
-  @thread_archive_id 4
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
-  @websocket_magic "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-  @websocket_handshake_timeout_ms 5_000
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
   @type session :: %{
-          port: port() | pid(),
+          port: port(),
           metadata: map(),
-          model: String.t() | nil,
-          reasoning_effort: String.t() | nil,
-          service_tier: String.t() | nil,
           approval_policy: String.t() | map(),
           auto_approve_requests: boolean(),
           thread_sandbox: String.t(),
@@ -46,23 +39,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
-    requested_thread_id = Keyword.get(opts, :thread_id)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
          {:ok, port} <- start_port(expanded_workspace, worker_host) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
-           session_policies = Map.put(session_policies, :worker_host, worker_host),
-           {:ok, thread_id} <-
-             do_start_session(port, expanded_workspace, session_policies, requested_thread_id) do
+           {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
         {:ok,
          %{
            port: port,
            metadata: metadata,
-           model: session_policies.model,
-           reasoning_effort: session_policies.reasoning_effort,
-           service_tier: session_policies.service_tier,
            approval_policy: session_policies.approval_policy,
            auto_approve_requests: session_policies.approval_policy == "never",
            thread_sandbox: session_policies.thread_sandbox,
@@ -84,9 +71,6 @@ defmodule SymphonyElixir.Codex.AppServer do
         %{
           port: port,
           metadata: metadata,
-          model: model,
-          reasoning_effort: reasoning_effort,
-          service_tier: service_tier,
           approval_policy: approval_policy,
           auto_approve_requests: auto_approve_requests,
           turn_sandbox_policy: turn_sandbox_policy,
@@ -104,13 +88,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         DynamicTool.execute(tool, arguments)
       end)
 
-    case start_turn(port, thread_id, prompt, issue, workspace, %{
-           approval_policy: approval_policy,
-           turn_sandbox_policy: turn_sandbox_policy,
-           model: model,
-           reasoning_effort: reasoning_effort,
-           service_tier: service_tier
-         }) do
+    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
       {:ok, turn_id} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -162,44 +140,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(%{port: port}) do
+  def stop_session(%{port: port}) when is_port(port) do
     stop_port(port)
-  end
-
-  @spec archive_thread(String.t(), keyword()) :: :ok | {:error, term()}
-  def archive_thread(thread_id, opts \\ []) when is_binary(thread_id) do
-    worker_host = Keyword.get(opts, :worker_host)
-
-    with :ok <- validate_thread_id(thread_id),
-         {:ok, workspace} <- archive_workspace(opts),
-         {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host) do
-      try do
-        with :ok <- send_initialize(port) do
-          do_archive_thread(port, thread_id)
-        end
-      after
-        stop_port(port)
-      end
-    end
-  end
-
-  defp validate_thread_id(thread_id) when is_binary(thread_id) do
-    if String.trim(thread_id) == "" do
-      {:error, :invalid_thread_id}
-    else
-      :ok
-    end
-  end
-
-  defp archive_workspace(opts) do
-    case Keyword.get(opts, :workspace) do
-      workspace when is_binary(workspace) ->
-        {:ok, workspace}
-
-      _ ->
-        {:error, :missing_archive_workspace}
-    end
   end
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
@@ -245,21 +187,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_port(workspace, nil) do
-    command = Config.settings!().codex.command
-
-    case websocket_proxy_socket_path(command) do
-      {:ok, socket_path} -> start_websocket_proxy(socket_path)
-      :not_proxy -> start_stdio_port(workspace, command)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp start_port(workspace, worker_host) when is_binary(worker_host) do
-    remote_command = remote_launch_command(workspace)
-    SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
-  end
-
-  defp start_stdio_port(workspace, command) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -272,7 +199,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(command)],
+            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
             cd: String.to_charlist(workspace),
             line: @port_line_bytes
           ]
@@ -282,39 +209,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_websocket_proxy(socket_path) do
-    expanded_socket_path = expand_proxy_socket_path(socket_path)
-
-    with {:ok, socket} <-
-           :gen_tcp.connect({:local, expanded_socket_path}, 0, [
-             :binary,
-             active: false,
-             packet: :raw
-           ]),
-         {:ok, initial_buffer} <- websocket_handshake(socket) do
-      owner = self()
-
-      pid =
-        spawn_link(fn ->
-          receive do
-            {:start_websocket_proxy, socket, initial_buffer} ->
-              :inet.setopts(socket, active: :once)
-              websocket_proxy_loop(owner, socket, initial_buffer)
-          end
-        end)
-
-      case :gen_tcp.controlling_process(socket, pid) do
-        :ok ->
-          send(pid, {:start_websocket_proxy, socket, initial_buffer})
-          {:ok, pid}
-
-        {:error, reason} ->
-          :gen_tcp.close(socket)
-          {:error, {:websocket_proxy_owner_transfer_failed, reason}}
-      end
-    else
-      {:error, reason} -> {:error, {:websocket_proxy_connect_failed, expanded_socket_path, reason}}
-    end
+  defp start_port(workspace, worker_host) when is_binary(worker_host) do
+    remote_command = remote_launch_command(workspace)
+    SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
 
   defp remote_launch_command(workspace) when is_binary(workspace) do
@@ -339,250 +236,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       host when is_binary(host) -> Map.put(base_metadata, :worker_host, host)
       _ -> base_metadata
     end
-  end
-
-  defp port_metadata(port, worker_host) when is_pid(port) do
-    base_metadata = %{codex_app_server_transport: "websocket-proxy"}
-
-    case worker_host do
-      host when is_binary(host) -> Map.put(base_metadata, :worker_host, host)
-      _ -> base_metadata
-    end
-  end
-
-  defp websocket_proxy_socket_path(command) when is_binary(command) do
-    if Regex.match?(~r/\bapp-server\s+proxy\b/, command),
-      do: parse_websocket_proxy_socket_path(command),
-      else: :not_proxy
-  end
-
-  defp parse_websocket_proxy_socket_path(command) do
-    case Regex.run(~r/--sock(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/, command, capture: :all_but_first) do
-      captures when is_list(captures) ->
-        captures
-        |> Enum.find(&(&1 != ""))
-        |> websocket_proxy_socket_result()
-
-      _ ->
-        {:error, :missing_websocket_proxy_socket}
-    end
-  end
-
-  defp websocket_proxy_socket_result(socket_path) when is_binary(socket_path) do
-    {:ok, socket_path}
-  end
-
-  defp websocket_proxy_socket_result(_other) do
-    {:error, :missing_websocket_proxy_socket}
-  end
-
-  defp expand_proxy_socket_path(path) when is_binary(path) do
-    codex_home = System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
-
-    path
-    |> String.replace("${CODEX_HOME:-$HOME/.codex}", codex_home)
-    |> String.replace("${CODEX_HOME}", codex_home)
-    |> String.replace("$CODEX_HOME", codex_home)
-    |> String.replace("${HOME}", System.user_home!())
-    |> String.replace("$HOME", System.user_home!())
-    |> expand_home_path()
-    |> Path.expand()
-  end
-
-  defp expand_home_path("~/" <> rest), do: Path.join(System.user_home!(), rest)
-  defp expand_home_path("~"), do: System.user_home!()
-  defp expand_home_path(path), do: path
-
-  defp websocket_handshake(socket) do
-    key = Base.encode64(:crypto.strong_rand_bytes(16))
-
-    request = [
-      "GET /rpc HTTP/1.1\r\n",
-      "Host: codex-app-server\r\n",
-      "Upgrade: websocket\r\n",
-      "Connection: Upgrade\r\n",
-      "Sec-WebSocket-Key: ",
-      key,
-      "\r\n",
-      "Sec-WebSocket-Version: 13\r\n",
-      "\r\n"
-    ]
-
-    with :ok <- :gen_tcp.send(socket, request),
-         {:ok, response, initial_buffer} <-
-           websocket_read_http_response(socket, "", handshake_deadline()),
-         :ok <- validate_websocket_handshake(response, key) do
-      {:ok, initial_buffer}
-    end
-  end
-
-  defp handshake_deadline do
-    System.monotonic_time(:millisecond) + @websocket_handshake_timeout_ms
-  end
-
-  defp websocket_read_http_response(socket, buffer, deadline_ms) do
-    case :binary.match(buffer, "\r\n\r\n") do
-      {header_end, 4} ->
-        response = binary_part(buffer, 0, header_end + 4)
-        rest = binary_part(buffer, header_end + 4, byte_size(buffer) - header_end - 4)
-        {:ok, response, rest}
-
-      :nomatch ->
-        timeout_ms = max(deadline_ms - System.monotonic_time(:millisecond), 0)
-
-        case :gen_tcp.recv(socket, 0, timeout_ms) do
-          {:ok, chunk} ->
-            websocket_read_http_response(socket, buffer <> chunk, deadline_ms)
-
-          {:error, :timeout} ->
-            {:error, :websocket_handshake_timeout}
-
-          {:error, reason} ->
-            {:error, {:websocket_handshake_recv_failed, reason}}
-        end
-    end
-  end
-
-  defp validate_websocket_handshake(response, key) do
-    [status_line | header_lines] = String.split(response, "\r\n", trim: true)
-
-    headers =
-      Enum.reduce(header_lines, %{}, fn line, acc ->
-        case String.split(line, ":", parts: 2) do
-          [name, value] -> Map.put(acc, String.downcase(String.trim(name)), String.trim(value))
-          _ -> acc
-        end
-      end)
-
-    expected_accept =
-      :crypto.hash(:sha, key <> @websocket_magic)
-      |> Base.encode64()
-
-    cond do
-      not String.contains?(status_line, " 101 ") ->
-        {:error, {:websocket_handshake_rejected, status_line}}
-
-      Map.get(headers, "sec-websocket-accept") != expected_accept ->
-        {:error, :invalid_websocket_accept}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp websocket_proxy_loop(owner, socket, buffer) do
-    case websocket_deliver_frames(owner, socket, buffer) do
-      {:ok, remaining_buffer} ->
-        receive do
-          {:send, payload} when is_binary(payload) ->
-            _ = :gen_tcp.send(socket, websocket_client_frame(payload, 0x1))
-            websocket_proxy_loop(owner, socket, remaining_buffer)
-
-          :stop ->
-            _ = :gen_tcp.send(socket, websocket_client_frame("", 0x8))
-            :gen_tcp.close(socket)
-
-          {:tcp, ^socket, chunk} ->
-            :inet.setopts(socket, active: :once)
-            websocket_proxy_loop(owner, socket, remaining_buffer <> chunk)
-
-          {:tcp_closed, ^socket} ->
-            send(owner, {self(), {:exit_status, 0}})
-
-          {:tcp_error, ^socket, reason} ->
-            send(owner, {self(), {:exit_status, {:tcp_error, reason}}})
-        end
-
-      :closed ->
-        :ok
-    end
-  end
-
-  defp websocket_deliver_frames(owner, socket, buffer) do
-    case websocket_decode_frame(buffer) do
-      {:ok, %{opcode: opcode, payload: payload}, rest} when opcode in [0x1, 0x2] ->
-        send(owner, {self(), {:data, {:eol, payload}}})
-        websocket_deliver_frames(owner, socket, rest)
-
-      {:ok, %{opcode: 0x8}, _rest} ->
-        send(owner, {self(), {:exit_status, 0}})
-        :gen_tcp.close(socket)
-        :closed
-
-      {:ok, %{opcode: 0x9, payload: payload}, rest} ->
-        _ = :gen_tcp.send(socket, websocket_client_frame(payload, 0xA))
-        websocket_deliver_frames(owner, socket, rest)
-
-      {:ok, _frame, rest} ->
-        websocket_deliver_frames(owner, socket, rest)
-
-      :more ->
-        {:ok, buffer}
-    end
-  end
-
-  defp websocket_decode_frame(buffer) when byte_size(buffer) < 2, do: :more
-
-  defp websocket_decode_frame(<<first, second, rest::binary>>) do
-    opcode = first &&& 0x0F
-    masked? = (second &&& 0x80) == 0x80
-    length_code = second &&& 0x7F
-
-    with {:ok, length, rest_after_length} <- websocket_payload_length(length_code, rest),
-         {:ok, mask_key, rest_after_mask} <- websocket_mask_key(masked?, rest_after_length),
-         true <- byte_size(rest_after_mask) >= length do
-      <<payload::binary-size(length), remaining::binary>> = rest_after_mask
-
-      payload =
-        if masked? do
-          websocket_mask_payload(payload, mask_key)
-        else
-          payload
-        end
-
-      {:ok, %{opcode: opcode, payload: payload}, remaining}
-    else
-      false -> :more
-      :more -> :more
-    end
-  end
-
-  defp websocket_payload_length(length, rest) when length < 126, do: {:ok, length, rest}
-
-  defp websocket_payload_length(126, <<length::16, rest::binary>>), do: {:ok, length, rest}
-  defp websocket_payload_length(126, _rest), do: :more
-
-  defp websocket_payload_length(127, <<length::64, rest::binary>>), do: {:ok, length, rest}
-  defp websocket_payload_length(127, _rest), do: :more
-
-  defp websocket_mask_key(false, rest), do: {:ok, nil, rest}
-  defp websocket_mask_key(true, <<mask_key::binary-size(4), rest::binary>>), do: {:ok, mask_key, rest}
-  defp websocket_mask_key(true, _rest), do: :more
-
-  defp websocket_client_frame(payload, opcode) when is_binary(payload) do
-    mask_key = :crypto.strong_rand_bytes(4)
-    length = byte_size(payload)
-
-    length_header =
-      cond do
-        length < 126 -> <<0x80 ||| length>>
-        length <= 65_535 -> <<0x80 ||| 126, length::16>>
-        true -> <<0x80 ||| 127, length::64>>
-      end
-
-    <<0x80 ||| opcode>> <> length_header <> mask_key <> websocket_mask_payload(payload, mask_key)
-  end
-
-  defp websocket_mask_payload(payload, nil), do: payload
-
-  defp websocket_mask_payload(payload, <<a, b, c, d>>) do
-    mask = {a, b, c, d}
-
-    payload
-    |> :binary.bin_to_list()
-    |> Enum.with_index()
-    |> Enum.map(fn {byte, index} -> bxor(byte, elem(mask, rem(index, 4))) end)
-    |> :binary.list_to_bin()
   end
 
   defp send_initialize(port) do
@@ -617,72 +270,42 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies, nil) do
+  defp do_start_session(port, workspace, session_policies) do
     case send_initialize(port) do
       :ok -> start_thread(port, workspace, session_policies)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp do_start_session(port, workspace, session_policies, thread_id) when is_binary(thread_id) do
-    with :ok <- validate_thread_id(thread_id),
-         :ok <- send_initialize(port),
-         :ok <- maybe_attach_worktree_owner(workspace, thread_id, session_policies) do
-      {:ok, thread_id}
-    end
-  end
-
-  defp do_start_session(_port, _workspace, _session_policies, thread_id), do: {:error, {:invalid_thread_id, thread_id}}
-
-  defp do_archive_thread(port, thread_id) do
-    send_message(port, %{
-      "method" => "thread/archive",
-      "id" => @thread_archive_id,
-      "params" => %{
-        "threadId" => thread_id
-      }
-    })
-
-    case await_response(port, @thread_archive_id) do
-      {:ok, _result} -> :ok
-      other -> other
-    end
-  end
-
-  defp start_thread(port, workspace, session_policies) do
-    params =
-      %{
-        "approvalPolicy" => session_policies.approval_policy,
-        "sandbox" => session_policies.thread_sandbox,
-        "cwd" => workspace,
-        "dynamicTools" => DynamicTool.tool_specs()
-      }
-      |> maybe_put("model", session_policies.model)
-      |> maybe_put("serviceTier", session_policies.service_tier)
-
+  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
-      "params" => params
+      "params" => %{
+        "approvalPolicy" => approval_policy,
+        "sandbox" => thread_sandbox,
+        "cwd" => workspace,
+        "dynamicTools" => DynamicTool.tool_specs()
+      }
     })
 
     case await_response(port, @thread_start_id) do
-      {:ok, %{"thread" => %{"id" => thread_id}}} ->
-        with :ok <- maybe_attach_worktree_owner(workspace, thread_id, session_policies) do
-          {:ok, thread_id}
-        end
-
       {:ok, %{"thread" => thread_payload}} ->
-        {:error, {:invalid_thread_payload, thread_payload}}
+        case thread_payload do
+          %{"id" => thread_id} -> {:ok, thread_id}
+          _ -> {:error, {:invalid_thread_payload, thread_payload}}
+        end
 
       other ->
         other
     end
   end
 
-  defp start_turn(port, thread_id, prompt, issue, workspace, session_policies) do
-    params =
-      %{
+  defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+    send_message(port, %{
+      "method" => "turn/start",
+      "id" => @turn_start_id,
+      "params" => %{
         "threadId" => thread_id,
         "input" => [
           %{
@@ -692,18 +315,9 @@ defmodule SymphonyElixir.Codex.AppServer do
         ],
         "cwd" => workspace,
         "title" => "#{issue.identifier}: #{issue.title}",
-        "approvalPolicy" => session_policies.approval_policy,
-        "sandboxPolicy" => session_policies.turn_sandbox_policy
+        "approvalPolicy" => approval_policy,
+        "sandboxPolicy" => turn_sandbox_policy
       }
-      |> maybe_put("model", session_policies.model)
-      |> maybe_put("effort", session_policies.reasoning_effort)
-      |> maybe_put("serviceTier", session_policies.service_tier)
-      |> maybe_put("collaborationMode", collaboration_mode(session_policies))
-
-    send_message(port, %{
-      "method" => "turn/start",
-      "id" => @turn_start_id,
-      "params" => params
     })
 
     case await_response(port, @turn_start_id) do
@@ -711,68 +325,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       other -> other
     end
   end
-
-  defp maybe_attach_worktree_owner(_workspace, _thread_id, %{attach_worktree_owner: false}), do: :ok
-
-  defp maybe_attach_worktree_owner(_workspace, _thread_id, %{attach_worktree_owner: true, worker_host: worker_host})
-       when is_binary(worker_host) do
-    {:error, {:worktree_owner_attach_failed, {:unsupported_remote_worker, worker_host}}}
-  end
-
-  defp maybe_attach_worktree_owner(workspace, thread_id, %{attach_worktree_owner: true}) do
-    with :ok <- validate_thread_id(thread_id),
-         {:ok, git_path} <- git_thread_config_path(workspace),
-         :ok <- File.mkdir_p(Path.dirname(git_path)),
-         {:ok, payload} <- Jason.encode(%{version: 1, ownerThreadId: thread_id}),
-         :ok <- File.write(git_path, payload <> "\n") do
-      :ok
-    else
-      {:error, reason} -> {:error, {:worktree_owner_attach_failed, reason}}
-    end
-  end
-
-  defp git_thread_config_path(workspace) do
-    with git when is_binary(git) <- System.find_executable("git"),
-         {output, 0} <-
-           System.cmd(git, ["-C", workspace, "rev-parse", "--git-path", "codex-thread.json"], stderr_to_stdout: true) do
-      output
-      |> String.trim()
-      |> git_thread_config_result(workspace)
-    else
-      nil -> {:error, :git_not_found}
-      {output, status} -> {:error, {:git_rev_parse_failed, status, String.trim(output)}}
-    end
-  end
-
-  defp git_thread_config_result("", _workspace), do: {:error, :empty_git_path}
-
-  defp git_thread_config_result(path, workspace) do
-    case Path.type(path) do
-      :absolute -> {:ok, path}
-      _relative -> {:ok, Path.expand(path, workspace)}
-    end
-  end
-
-  defp collaboration_mode(%{model: model, reasoning_effort: reasoning_effort})
-       when is_binary(model) and model != "" do
-    %{
-      "mode" => "default",
-      "settings" => %{
-        "model" => model,
-        "reasoning_effort" => normalize_optional_string(reasoning_effort),
-        "developer_instructions" => nil
-      }
-    }
-  end
-
-  defp collaboration_mode(_session_policies), do: nil
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, ""), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp normalize_optional_string(value) when is_binary(value) and value != "", do: value
-  defp normalize_optional_string(_value), do: nil
 
   defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
     receive_loop(
@@ -1454,14 +1006,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp stop_port(port) when is_pid(port) do
-    if Process.alive?(port) do
-      send(port, :stop)
-    end
-
-    :ok
-  end
-
   defp emit_message(on_message, event, details, metadata) when is_function(on_message, 1) do
     message = metadata |> Map.merge(details) |> Map.put(:event, event) |> Map.put(:timestamp, DateTime.utc_now())
     on_message.(message)
@@ -1511,12 +1055,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp tool_call_arguments(_params), do: %{}
 
   defp send_message(port, message) do
-    payload = Jason.encode!(message)
-
-    case port do
-      port when is_port(port) -> Port.command(port, payload <> "\n")
-      port when is_pid(port) -> send(port, {:send, payload})
-    end
+    line = Jason.encode!(message) <> "\n"
+    Port.command(port, line)
   end
 
   defp needs_input?("mcpServer/elicitation/request", payload) when is_map(payload), do: true

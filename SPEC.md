@@ -36,10 +36,8 @@ stricter approvals or sandboxing.
 Important boundary:
 
 - Symphony is a scheduler/runner and tracker reader.
-- Most ticket writes (state transitions, progress comments, PR links) are typically performed by
-  the coding agent using tools available in the workflow/runtime environment. Implementations MAY
-  also perform narrowly scoped service comments that are part of orchestration, such as asking for
-  missing human input.
+- Ticket writes (state transitions, comments, PR links) are typically performed by the coding agent
+  using tools available in the workflow/runtime environment.
 - A successful run can end at a workflow-defined handoff state (for example `Human Review`), not
   necessarily `Done`.
 
@@ -52,8 +50,6 @@ Important boundary:
 - Create deterministic per-issue workspaces and preserve them across runs.
 - Stop active runs when issue state changes make them ineligible.
 - Recover from transient failures with exponential backoff.
-- Carry fresh tracker comments into continuation turns when an implementation supports human input
-  through the issue tracker.
 - Load runtime behavior from a repository-owned `WORKFLOW.md` contract.
 - Expose operator-visible observability (at minimum structured logs).
 - Support tracker/filesystem-driven restart recovery without requiring a persistent database; exact
@@ -88,7 +84,6 @@ Important boundary:
    - Fetches candidate issues in active states.
    - Fetches current states for specific issue IDs (reconciliation).
    - Fetches terminal-state issues during startup cleanup.
-   - Fetches issue comments when the implementation uses tracker comments as human input.
    - Normalizes tracker payloads into a stable issue model.
 
 4. `Orchestrator`
@@ -178,15 +173,6 @@ Fields:
     - `id` (string or null)
     - `identifier` (string or null)
     - `state` (string or null)
-- `comments` (list of comment refs, OPTIONAL)
-  - Present when the tracker adapter fetches comments for human input.
-  - Each comment ref contains:
-    - `id` (string)
-    - `body` (string)
-    - `author_id` (string or null)
-    - `author_name` (string or null)
-    - `created_at` (timestamp or null)
-    - `updated_at` (timestamp or null)
 - `created_at` (timestamp or null)
 - `updated_at` (timestamp or null)
 
@@ -646,14 +632,9 @@ Important nuance:
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
-- If new human tracker comments are available, continuation guidance SHOULD include those comments
-  as fresh input and keep using the existing coding-agent thread/workspace.
 - Once the worker exits normally, the orchestrator still schedules a short continuation retry
   (about 1 second) so it can re-check whether the issue remains active and needs another worker
   session.
-- If the agent stops because it needs human input, an implementation MAY retain the workspace and
-  thread metadata in the retry queue, post a tracker comment asking for the input, and resume the
-  same thread when a newer human comment appears.
 
 ### 7.2 Run Attempt Lifecycle
 
@@ -814,8 +795,6 @@ Part B: Tracker state refresh
   - If tracker state is terminal: terminate worker and clean workspace.
   - If tracker state is still active: update the in-memory issue snapshot.
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
-- If tracker comments are used as human input, reconciliation MAY also capture newer human comments
-  for the running worker or for a blocked retry entry.
 - If state refresh fails, keep workers running and try again on the next tick.
 
 ### 8.6 Startup Terminal Workspace Cleanup
@@ -986,10 +965,6 @@ Session identifiers:
 - Extract `turn_id` from each turn identity returned by the targeted Codex app-server protocol.
 - Emit `session_id = "<thread_id>-<turn_id>"`
 - Reuse the same `thread_id` for all continuation turns inside one worker run
-- If the targeted coding-agent surface supports thread URLs, status surfaces SHOULD expose a link
-  derived from `thread_id`.
-- If the targeted coding-agent surface supports archiving threads, implementations MAY archive the
-  thread when the associated issue reaches a terminal state.
 
 ### 10.3 Streaming Turn Processing
 
@@ -1200,8 +1175,6 @@ Additional normalization details:
 
 - `labels` -> lowercase strings
 - `blocked_by` -> derived from inverse relations where relation type is `blocks`
-- `comments` -> chronological tracker comments when fetched; implementation-defined filters MAY
-  exclude service-owned workpad or orchestration marker comments from human-input handling
 - `priority` -> integer only (non-integers become null)
 - `created_at` and `updated_at` -> parse ISO-8601 timestamps
 
@@ -1226,15 +1199,13 @@ Orchestrator behavior on tracker errors:
 
 ### 11.5 Tracker Writes (Important Boundary)
 
-Symphony does not require broad first-class tracker write APIs in the orchestrator.
+Symphony does not require first-class tracker write APIs in the orchestrator.
 
 - Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
   agent using tools defined by the workflow prompt.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
-- Implementations MAY use narrowly scoped tracker writes for orchestration-only notices, such as a
-  marked comment requesting human input before resuming the same thread.
 - If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
   toolchain rather than orchestrator business logic.
 
@@ -2124,8 +2095,8 @@ Use the same validation profiles as Section 17:
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
-- TODO: Add broader first-class tracker write APIs (state transitions, PR metadata, editable
-  progress comments) in the orchestrator instead of only via agent tools.
+- TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
+  of only via agent tools.
 - TODO: Add pluggable issue tracker adapters beyond Linear.
 
 ### 18.3 Operational Validation Before Production (RECOMMENDED)
