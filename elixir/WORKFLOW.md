@@ -2,6 +2,7 @@
 tracker:
   kind: linear
   project_slug: "symphony-0c79b11b75ea"
+  required_labels: []
   active_states:
     - Todo
     - In Progress

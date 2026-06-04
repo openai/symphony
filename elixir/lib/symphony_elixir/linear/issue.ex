@@ -40,4 +40,19 @@ defmodule SymphonyElixir.Linear.Issue do
   def label_names(%__MODULE__{labels: labels}) do
     labels
   end
+
+  @spec routable?(t(), [String.t()]) :: boolean()
+  def routable?(%__MODULE__{assigned_to_worker: true, labels: labels}, required_labels)
+      when is_list(labels) and is_list(required_labels) do
+    issue_labels = MapSet.new(labels, &normalize_label/1)
+    Enum.all?(required_labels, &MapSet.member?(issue_labels, normalize_label(&1)))
+  end
+
+  def routable?(%__MODULE__{}, _required_labels), do: false
+
+  defp normalize_label(label) when is_binary(label) do
+    label
+    |> String.trim()
+    |> String.downcase()
+  end
 end

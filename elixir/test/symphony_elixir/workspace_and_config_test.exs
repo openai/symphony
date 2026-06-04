@@ -307,6 +307,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute issue.assigned_to_worker
   end
 
+  test "linear issue routing requires every configured label" do
+    issue = %Issue{labels: [" Symphony ", "JavaScript"], assigned_to_worker: true}
+
+    assert Issue.routable?(issue, [])
+    assert Issue.routable?(issue, ["symphony"])
+    assert Issue.routable?(issue, ["SYMPHONY", "javascript"])
+    refute Issue.routable?(issue, ["symph"])
+    refute Issue.routable?(issue, [" "])
+    refute Issue.routable?(issue, ["symphony", "security"])
+    refute Issue.routable?(%{issue | assigned_to_worker: false}, ["symphony"])
+  end
+
   test "linear client normalizes blockers from inverse relations" do
     raw_issue = %{
       "id" => "issue-1",
@@ -538,6 +550,31 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "issue without every required label is not dispatch-eligible" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_required_labels: ["symphony", "javascript"]
+    )
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "unlabeled-1",
+      identifier: "MT-1008",
+      title: "Not opted in",
+      state: "Todo",
+      labels: ["symphony"]
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+    assert Orchestrator.should_dispatch_issue_for_test(%{issue | labels: ["Symphony", "JavaScript"]}, state)
+  end
+
   test "todo issue with terminal blockers remains dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
@@ -582,6 +619,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert skipped_issue.identifier == "MT-1005"
     assert skipped_issue.blocked_by == [%{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}]
+  end
+
+  test "dispatch revalidation skips an issue after a required label is removed" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
+
+    stale_issue = %Issue{
+      id: "unlabeled-2",
+      identifier: "MT-1009",
+      title: "Initially opted in",
+      state: "Todo",
+      labels: ["symphony"]
+    }
+
+    refreshed_issue = %{stale_issue | labels: []}
+    fetcher = fn ["unlabeled-2"] -> {:ok, [refreshed_issue]} end
+
+    assert {:skip, ^refreshed_issue} =
+             Orchestrator.revalidate_issue_for_dispatch_for_test(stale_issue, fetcher)
   end
 
   test "workspace remove returns error information for missing directory" do
@@ -741,6 +796,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
     assert config.tracker.project_slug == nil
+    assert config.tracker.required_labels == []
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
@@ -771,6 +827,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.turn_timeout_ms == 3_600_000
     assert config.codex.read_timeout_ms == 5_000
     assert config.codex.stall_timeout_ms == 300_000
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_required_labels: [" Symphony ", "SYMPHONY", "JavaScript"]
+    )
+
+    assert Config.settings!().tracker.required_labels == ["symphony", "javascript"]
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: [" "])
+    assert Config.settings!().tracker.required_labels == [""]
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "codex --config 'model=\"gpt-5.5\"' app-server"

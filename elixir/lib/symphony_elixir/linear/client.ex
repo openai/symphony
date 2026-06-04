@@ -542,7 +542,7 @@ defmodule SymphonyElixir.Linear.Client do
     labels
     |> Enum.map(& &1["name"])
     |> Enum.reject(&is_nil/1)
-    |> Enum.map(&String.downcase/1)
+    |> Enum.map(&(String.trim(&1) |> String.downcase()))
   end
 
   defp extract_labels(_), do: []
