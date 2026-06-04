@@ -98,6 +98,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
+            <p class="metric-label">Expired</p>
+            <p class="metric-value numeric"><%= @payload.counts.expired %></p>
+            <p class="metric-detail">Claim leases recovered and handed back to retry.</p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Total tokens</p>
             <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
             <p class="metric-detail numeric">
@@ -121,6 +127,112 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Claim leases</h2>
+              <p class="section-copy">Durable worker claim heartbeat, retry, and lease expiry state.</p>
+            </div>
+          </div>
+
+          <%= if @payload.claim_leases == [] do %>
+            <p class="empty-state">No active claim leases.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 920px;">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Lease state</th>
+                    <th>Attempt</th>
+                    <th>Worker</th>
+                    <th>Workspace</th>
+                    <th>Last seen</th>
+                    <th>Expires</th>
+                    <th>Retry/backoff</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.claim_leases}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
+                    </td>
+                    <td>
+                      <span class={state_badge_class(entry.state)}>
+                        <%= entry.state || "claimed" %>
+                      </span>
+                    </td>
+                    <td class="numeric"><%= entry.attempt || "n/a" %></td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class="mono"><%= entry.worker_id || "n/a" %></span>
+                        <span class="muted"><%= entry.worker_host || "local" %></span>
+                      </div>
+                    </td>
+                    <td class="mono"><%= entry.workspace_path || "pending" %></td>
+                    <td class="mono"><%= entry.last_seen_at || "n/a" %></td>
+                    <td class="mono"><%= entry.lease_expires_at || "n/a" %></td>
+                    <td>
+                      <div class="detail-stack">
+                        <span><%= entry.retry_due_at || "n/a" %></span>
+                        <span class="muted">
+                          backoff=<%= entry.retry_backoff_ms || "n/a" %> error=<%= entry.error || "n/a" %>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Expired leases</h2>
+              <p class="section-copy">Recovered stale claims that were requeued without duplicating live workers.</p>
+            </div>
+          </div>
+
+          <%= if @payload.expired == [] do %>
+            <p class="empty-state">No expired leases recovered.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 820px;">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Attempt</th>
+                    <th>Worker</th>
+                    <th>Expired at</th>
+                    <th>Requeued at</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.expired}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
+                    </td>
+                    <td class="numeric"><%= entry.attempt || "n/a" %></td>
+                    <td class="mono"><%= entry.worker_id || "n/a" %></td>
+                    <td class="mono"><%= entry.expired_at || "n/a" %></td>
+                    <td class="mono"><%= entry.requeued_at || "n/a" %></td>
+                    <td><%= entry.error || "n/a" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
         </section>
 
         <section class="section-card">
@@ -395,7 +507,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     cond do
       String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
+      String.contains?(normalized, ["blocked", "error", "failed", "expired"]) -> "#{base} state-badge-danger"
       String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
       true -> base
     end

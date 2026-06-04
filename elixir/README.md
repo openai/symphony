@@ -31,6 +31,12 @@ issue claimed and exposes it as blocked in the runtime state, JSON API, and dash
 entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
 Linear issue can become a dispatch candidate again after restart.
 
+Claimed issues also get a Symphony claim lease marker through the tracker comment API. The lease
+records the last-seen worker id, workspace path, attempt number, last heartbeat time, and expiry.
+Active workers refresh the lease during poll and Codex activity; retry and blocked transitions
+update the same lease state. If a non-live claim lease expires, Symphony logs the recovery and
+requeues the issue without starting a duplicate worker for a still-running claim.
+
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
@@ -168,6 +174,7 @@ The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
+- Active, retrying, blocked, and expired claim lease visibility
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 

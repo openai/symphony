@@ -760,6 +760,9 @@ Retry entry creation:
 
 - Cancel any existing retry timer for the same issue.
 - Store `attempt`, `identifier`, `error`, `due_at_ms`, and new timer handle.
+- Keep the issue claimed while retrying so a queued handoff cannot be dispatched twice.
+- If a claim lease exists, update it to `retrying` with retry due/backoff metadata and the last
+  seen worker/workspace details.
 
 Backoff formula:
 
@@ -783,6 +786,23 @@ Note:
   (including terminal transitions for currently running issues).
 - Retry handling mainly operates on active candidates and releases claims when the issue is absent,
   rather than performing terminal cleanup itself.
+
+Claim lease behavior:
+
+- When an issue is claimed for a worker, create a visible tracker comment marker headed
+  `## Symphony Claim Lease`.
+- Persist these lease fields in runtime state and tracker-visible marker text:
+  `worker_id`, `worker_host`, `workspace_path`, `attempt`, `last_seen_at`, and
+  `lease_expires_at`.
+- The default lease TTL is derived from polling cadence: at least 60 seconds and at least three poll
+  intervals.
+- Active workers refresh the lease during poll reconciliation and when runtime/Codex activity is
+  observed.
+- Retry and blocked transitions update the lease marker with `retrying` or `blocked` state and
+  relevant error/backoff details.
+- Expired leases are recovered only when no live running or blocked worker exists for the issue.
+  Recovery logs the expiration, records an `expired` claim entry for observability, and requeues the
+  issue for retry handoff.
 
 ### 8.5 Active Run Reconciliation
 
@@ -1407,7 +1427,9 @@ Minimum endpoints:
       "generated_at": "2026-02-24T20:15:30Z",
       "counts": {
         "running": 2,
-        "retrying": 1
+        "retrying": 1,
+        "blocked": 0,
+        "expired": 0
       },
       "running": [
         {
@@ -1436,6 +1458,19 @@ Minimum endpoints:
           "error": "no available orchestrator slots"
         }
       ],
+      "claim_leases": [
+        {
+          "issue_id": "abc123",
+          "issue_identifier": "MT-649",
+          "state": "active",
+          "worker_id": "local:#PID<0.123.0>",
+          "workspace_path": "/tmp/symphony_workspaces/MT-649",
+          "attempt": 1,
+          "last_seen_at": "2026-02-24T20:14:59Z",
+          "lease_expires_at": "2026-02-24T20:16:30Z"
+        }
+      ],
+      "expired": [],
       "codex_totals": {
         "input_tokens": 5000,
         "output_tokens": 2400,
