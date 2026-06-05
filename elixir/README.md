@@ -170,6 +170,7 @@ The observability UI now runs on a minimal Phoenix stack:
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+- Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 ## Project Layout
 

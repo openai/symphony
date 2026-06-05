@@ -12,6 +12,9 @@ defmodule SymphonyElixirWeb.StaticAssets do
   @external_resource @phoenix_live_view_js_path
 
   @dashboard_css File.read!(@dashboard_css_path)
+  @dashboard_css_digest :crypto.hash(:sha256, @dashboard_css)
+                        |> Base.encode16(case: :lower)
+                        |> binary_part(0, 12)
   @phoenix_html_js File.read!(@phoenix_html_js_path)
   @phoenix_js File.read!(@phoenix_js_path)
   @phoenix_live_view_js File.read!(@phoenix_live_view_js_path)
@@ -22,6 +25,9 @@ defmodule SymphonyElixirWeb.StaticAssets do
     "/vendor/phoenix/phoenix.js" => {"application/javascript", @phoenix_js},
     "/vendor/phoenix_live_view/phoenix_live_view.js" => {"application/javascript", @phoenix_live_view_js}
   }
+
+  @spec dashboard_css_url() :: String.t()
+  def dashboard_css_url, do: "/dashboard.css?v=#{@dashboard_css_digest}"
 
   @spec fetch(String.t()) :: {:ok, String.t(), binary()} | :error
   def fetch(path) when is_binary(path) do

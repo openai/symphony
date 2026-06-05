@@ -7,7 +7,10 @@ defmodule SymphonyElixirWeb.Layouts do
 
   @spec root(map()) :: Phoenix.LiveView.Rendered.t()
   def root(assigns) do
-    assigns = assign(assigns, :csrf_token, Plug.CSRFProtection.get_csrf_token())
+    assigns =
+      assigns
+      |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
+      |> assign(:dashboard_css_url, SymphonyElixirWeb.StaticAssets.dashboard_css_url())
 
     ~H"""
     <!DOCTYPE html>
@@ -36,7 +39,7 @@ defmodule SymphonyElixirWeb.Layouts do
             window.liveSocket = liveSocket;
           });
         </script>
-        <link rel="stylesheet" href="/dashboard.css" />
+        <link rel="stylesheet" href={@dashboard_css_url} />
       </head>
       <body>
         {@inner_content}
