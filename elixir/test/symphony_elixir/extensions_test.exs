@@ -527,6 +527,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html = html_response(get(build_conn(), "/"), 200)
     assert html =~ ~r|/dashboard\.css\?v=[0-9a-f]{12}|
+
+    assert html =~
+             ~r|<link rel="icon" type="image/png" sizes="128x128" href="/favicon\.png\?v=[0-9a-f]{12}">|
+
     assert html =~ "/vendor/phoenix_html/phoenix_html.js"
     assert html =~ "/vendor/phoenix/phoenix.js"
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
@@ -539,6 +543,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
     assert dashboard_css =~ "text-decoration-thickness: 1px"
+
+    favicon_conn = get(build_conn(), "/favicon.png")
+    assert response(favicon_conn, 200) == File.read!("priv/static/favicon.png")
+    assert Plug.Conn.get_resp_header(favicon_conn, "content-type") == ["image/png; charset=utf-8"]
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
