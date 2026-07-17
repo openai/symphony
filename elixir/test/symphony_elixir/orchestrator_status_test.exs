@@ -801,7 +801,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator triggers an immediate poll cycle shortly after startup" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       poll_interval_ms: 5_000
     )
 
@@ -853,7 +853,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       poll_interval_ms: 50
     )
 
@@ -902,7 +902,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       codex_stall_timeout_ms: 1_000
     )
 
@@ -943,6 +943,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       started_at: stale_activity_at
     }
 
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+
     :sys.replace_state(pid, fn _ ->
       initial_state
       |> Map.put(:running, %{issue_id => running_entry})
@@ -972,7 +974,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       codex_stall_timeout_ms: 1_000
     )
 
@@ -1019,6 +1021,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       started_at: stale_activity_at
     }
 
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+
     :sys.replace_state(pid, fn _ ->
       initial_state
       |> Map.put(:running, %{issue_id => running_entry})
@@ -1054,7 +1058,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator blocks failed workers after app-server reports input required" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
 
     issue_id = "issue-input-required"
     orchestrator_name = Module.concat(__MODULE__, :InputRequiredBlockOrchestrator)
@@ -1086,6 +1090,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       started_at: started_at
     }
 
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+
     :sys.replace_state(pid, fn _ ->
       initial_state
       |> Map.put(:running, %{issue_id => running_entry})
@@ -1107,7 +1113,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator blocks normal worker exits after input required completion" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
 
     issue_id = "issue-input-required-normal"
     orchestrator_name = Module.concat(__MODULE__, :InputRequiredNormalBlockOrchestrator)
@@ -1134,6 +1140,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_event: nil,
       started_at: DateTime.utc_now()
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
 
     :sys.replace_state(pid, fn _ ->
       initial_state

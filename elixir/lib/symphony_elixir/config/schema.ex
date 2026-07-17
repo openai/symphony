@@ -199,6 +199,13 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> validate_required([:command])
+      |> validate_change(:command, fn :command, command ->
+        if command != "" and String.trim(command) == "" do
+          [command: "can't be blank"]
+        else
+          []
+        end
+      end)
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)

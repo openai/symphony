@@ -53,25 +53,30 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
-    now_ms = System.monotonic_time(:millisecond)
-    config = Config.settings!()
+    case Config.settings() do
+      {:ok, config} ->
+        now_ms = System.monotonic_time(:millisecond)
 
-    state = %State{
-      poll_interval_ms: config.polling.interval_ms,
-      max_concurrent_agents: config.agent.max_concurrent_agents,
-      next_poll_due_at_ms: now_ms,
-      poll_check_in_progress: false,
-      tick_timer_ref: nil,
-      tick_token: nil,
-      task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
-      codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
-    }
+        state = %State{
+          poll_interval_ms: config.polling.interval_ms,
+          max_concurrent_agents: config.agent.max_concurrent_agents,
+          next_poll_due_at_ms: now_ms,
+          poll_check_in_progress: false,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
+          codex_totals: @empty_codex_totals,
+          codex_rate_limits: nil
+        }
 
-    run_terminal_workspace_cleanup()
-    state = schedule_tick(state, 0)
+        run_terminal_workspace_cleanup()
+        state = schedule_tick(state, 0)
 
-    {:ok, state}
+        {:ok, state}
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
   end
 
   @impl true

@@ -3,6 +3,7 @@ defmodule SymphonyElixir.CoreTest do
 
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
       tracker_api_token: nil,
       tracker_project_slug: nil,
       poll_interval_ms: nil,
@@ -45,6 +46,20 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, :missing_linear_project_slug} = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "   ",
+      tracker_project_slug: "project"
+    )
+
+    assert {:error, :missing_linear_api_token} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: ""
+    )
+
+    assert {:error, :missing_linear_project_slug} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
       codex_command: ""
     )
@@ -54,8 +69,9 @@ defmodule SymphonyElixir.CoreTest do
     assert message =~ "can't be blank"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "   ")
-    assert :ok = Config.validate!()
-    assert Config.settings!().codex.command == "   "
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.command"
+    assert message =~ "can't be blank"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "/bin/sh app-server")
     assert :ok = Config.validate!()
@@ -86,7 +102,12 @@ defmodule SymphonyElixir.CoreTest do
 
   test "current WORKFLOW.md file is valid and complete" do
     original_workflow_path = Workflow.workflow_file_path()
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+
     on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
+    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
+
+    System.put_env("LINEAR_API_KEY", "test-linear-api-key")
     Workflow.clear_workflow_file_path()
 
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
@@ -223,6 +244,108 @@ defmodule SymphonyElixir.CoreTest do
     assert is_pid(Process.whereis(SymphonyElixir.Orchestrator))
 
     GenServer.stop(pid)
+  end
+
+  test "orchestrator fails startup when semantic preflight fails" do
+    issue_suffix = System.unique_integer([:positive])
+    orchestrator_name = Module.concat(__MODULE__, "InvalidOrchestrator#{issue_suffix}")
+    workflow_path = Workflow.workflow_file_path()
+
+    on_exit(fn ->
+      if pid = Process.whereis(orchestrator_name) do
+        GenServer.stop(pid)
+      end
+
+      write_workflow_file!(workflow_path, tracker_kind: "memory")
+
+      if is_nil(Process.whereis(WorkflowStore)) do
+        assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
+      end
+
+      if is_nil(Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)) do
+        assert {:ok, _pid} =
+                 Supervisor.restart_child(
+                   SymphonyElixir.Supervisor,
+                   SymphonyElixir.AgentRuntimeSupervisor
+                 )
+      end
+    end)
+
+    assert :ok =
+             Supervisor.terminate_child(
+               SymphonyElixir.Supervisor,
+               SymphonyElixir.AgentRuntimeSupervisor
+             )
+
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil
+    )
+
+    previous_trap_exit = Process.flag(:trap_exit, true)
+
+    assert {:error, :missing_linear_project_slug} =
+             Orchestrator.start_link(name: orchestrator_name)
+
+    Process.flag(:trap_exit, previous_trap_exit)
+
+    refute Process.whereis(orchestrator_name)
+  end
+
+  test "runtime restart keeps last good settings after an invalid reload" do
+    issue_suffix = System.unique_integer([:positive])
+    runtime_supervisor_name = Module.concat(__MODULE__, "ReloadRuntime#{issue_suffix}")
+    task_supervisor_name = Module.concat(__MODULE__, "ReloadTaskSupervisor#{issue_suffix}")
+    orchestrator_name = Module.concat(__MODULE__, "ReloadOrchestrator#{issue_suffix}")
+
+    on_exit(fn ->
+      if pid = Process.whereis(runtime_supervisor_name) do
+        GenServer.stop(pid)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    assert {:ok, runtime_pid} =
+             SymphonyElixir.AgentRuntimeSupervisor.start_link(
+               name: runtime_supervisor_name,
+               task_supervisor_name: task_supervisor_name,
+               orchestrator_name: orchestrator_name
+             )
+
+    Process.unlink(runtime_pid)
+    original_orchestrator_pid = Process.whereis(orchestrator_name)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_api_token: "token",
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert Config.settings!().tracker.kind == "memory"
+
+    Process.exit(original_orchestrator_pid, :kill)
+
+    restarted_orchestrator_pid =
+      eventually_value(fn ->
+        case Process.whereis(orchestrator_name) do
+          pid when is_pid(pid) and pid != original_orchestrator_pid ->
+            case Orchestrator.snapshot(orchestrator_name, 100) do
+              %{} -> pid
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+      end)
+
+    assert is_pid(restarted_orchestrator_pid)
+    assert Process.whereis(orchestrator_name) == restarted_orchestrator_pid
+    assert Process.alive?(runtime_pid)
   end
 
   test "restarting the orchestrator does not overlap redispatched work" do
@@ -1228,6 +1351,11 @@ defmodule SymphonyElixir.CoreTest do
 
   test "in-repo WORKFLOW.md renders correctly" do
     workflow_path = Workflow.workflow_file_path()
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+
+    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
+
+    System.put_env("LINEAR_API_KEY", "test-linear-api-key")
     Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
 
     issue = %Issue{

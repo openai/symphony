@@ -87,10 +87,7 @@ defmodule SymphonyElixir.Config do
 
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
-    with :ok <- WorkflowStore.force_reload(),
-         {:ok, settings} <- settings() do
-      validate_semantics(settings)
-    end
+    WorkflowStore.force_reload()
   end
 
   @spec codex_runtime_settings(Path.t() | nil, keyword()) ::
@@ -109,7 +106,9 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp validate_semantics(settings) do
+  @doc false
+  @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
+  def validate_settings(settings) do
     cond do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
@@ -117,16 +116,19 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind not in ["linear", "memory"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
+      settings.tracker.kind == "linear" and not present_string?(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
+      settings.tracker.kind == "linear" and not present_string?(settings.tracker.project_slug) ->
         {:error, :missing_linear_project_slug}
 
       true ->
         :ok
     end
   end
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
 
   defp format_config_error(reason) do
     case reason do

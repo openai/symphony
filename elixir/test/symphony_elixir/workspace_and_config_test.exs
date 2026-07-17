@@ -780,6 +780,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     System.delete_env("LINEAR_API_KEY")
 
     write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
       workspace_root: nil,
       max_concurrent_agents: nil,
       codex_approval_policy: nil,
@@ -1012,6 +1013,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "config supports per-state max concurrent agent overrides" do
     workflow = """
     ---
+    tracker:
+      kind: memory
     agent:
       max_concurrent_agents: 10
       max_concurrent_agents_by_state:
