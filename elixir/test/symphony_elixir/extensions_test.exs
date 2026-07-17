@@ -105,16 +105,34 @@ defmodule SymphonyElixir.ExtensionsTest do
     ensure_workflow_store_running()
     assert {:ok, %{prompt: "You are an agent for this repository."}} = Workflow.current()
 
-    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Second prompt")
+    write_workflow_file!(Workflow.workflow_file_path(),
+      prompt: "Second prompt",
+      poll_interval_ms: 45_000
+    )
+
     send(WorkflowStore, :poll)
 
     assert_eventually(fn ->
       match?({:ok, %{prompt: "Second prompt"}}, Workflow.current())
     end)
 
+    good_settings = Config.settings!()
+    assert good_settings.polling.interval_ms == 45_000
+
     File.write!(Workflow.workflow_file_path(), "---\ntracker: [\n---\nBroken prompt\n")
     assert {:error, _reason} = WorkflowStore.force_reload()
     assert {:ok, %{prompt: "Second prompt"}} = Workflow.current()
+
+    File.write!(
+      Workflow.workflow_file_path(),
+      "---\npolling:\n  interval_ms: nope\n---\nTyped-invalid prompt\n"
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = WorkflowStore.force_reload()
+    assert message =~ "polling.interval_ms"
+    assert {:ok, %{prompt: "Second prompt"}} = Workflow.current()
+    assert Config.settings!().polling.interval_ms == good_settings.polling.interval_ms
+    assert {:error, {:invalid_workflow_config, _message}} = Config.validate!()
 
     third_workflow = Path.join(Path.dirname(Workflow.workflow_file_path()), "THIRD_WORKFLOW.md")
     write_workflow_file!(third_workflow, prompt: "Third prompt")
@@ -143,6 +161,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
 
     Workflow.set_workflow_file_path(missing_path)
+
+    assert {:error, {:missing_workflow_file, ^missing_path, :enoent}} =
+             WorkflowStore.settings()
 
     assert {:error, {:missing_workflow_file, ^missing_path, :enoent}} =
              WorkflowStore.force_reload()

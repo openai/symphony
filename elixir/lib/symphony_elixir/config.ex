@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Config do
   """
 
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Workflow
+  alias SymphonyElixir.{Workflow, WorkflowStore}
 
   @default_prompt_template """
   You are working on a Linear issue.
@@ -28,13 +28,7 @@ defmodule SymphonyElixir.Config do
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
-    case Workflow.current() do
-      {:ok, %{config: config}} when is_map(config) ->
-        Schema.parse(config)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    WorkflowStore.settings()
   end
 
   @spec settings!() :: Schema.t()
@@ -93,7 +87,8 @@ defmodule SymphonyElixir.Config do
 
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
-    with {:ok, settings} <- settings() do
+    with :ok <- WorkflowStore.force_reload(),
+         {:ok, settings} <- settings() do
       validate_semantics(settings)
     end
   end
