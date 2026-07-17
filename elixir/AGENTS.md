@@ -22,11 +22,21 @@ This directory contains the Elixir agent orchestration service that polls Linear
   - Never run Codex turn cwd in source repo.
   - Workspaces must stay under configured workspace root.
 - Orchestrator behavior is stateful and concurrency-sensitive; preserve retry, reconciliation, and cleanup semantics.
+- Simplicity is a project constraint: prefer the smallest coherent design with one clear owner and
+  invariant. Push back on extra abstractions, duplicated policy, and speculative flexibility.
+- For stateful changes, check startup, reload, restart, and failure recovery together before editing.
 - Follow `docs/logging.md` for logging conventions and required issue/session context fields.
 
 ## Tests and Validation
 
 Run targeted tests while iterating, then run full gates before handoff.
+
+- Prefer narrow tests that exercise real OTP processes and observable behavior over mock-only or
+  broad end-to-end coverage; prove health with a synchronous call or stable effect, not only a PID.
+- For non-trivial changes, use an adversarial review early to challenge complexity and try to break
+  adjacent lifecycle paths; a reproducible failure blocks landing even if other reviews are clean.
+- If tests need repeated global restarts or bespoke cleanup, first fix the shared harness or
+  ownership boundary.
 
 ```bash
 make all
@@ -37,6 +47,8 @@ make all
 - Public functions (`def`) in `lib/` must have an adjacent `@spec`.
 - `defp` specs are optional.
 - `@impl` callback implementations are exempt from local `@spec` requirement.
+- Evaluate proposed directions instead of agreeing reflexively; surface simpler designs and material
+  trade-offs early.
 - Keep changes narrowly scoped; avoid unrelated refactors.
 - Follow existing module/style patterns in `lib/symphony_elixir/*`.
 
