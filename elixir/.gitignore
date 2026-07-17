@@ -37,6 +37,8 @@ erl_crash.dump
 .idea/
 .vscode/
 /bin/
+/burrito_out/
+/dist/
 
 # Local environment and auth artifacts.
 .env

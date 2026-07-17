@@ -70,6 +70,29 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
+## Burrito releases
+
+Symphony ships self-contained executables built with
+[Burrito](https://github.com/burrito-elixir/burrito). They embed Erlang/OTP, Elixir, and Symphony,
+but still expect `codex`, `git`, and Linear credentials on the target machine.
+
+Supported release targets:
+
+- `macos_arm64`
+- `macos_x86_64`
+- `linux_arm64`
+- `linux_x86_64`
+
+`v*` tags publish all four targets with checksums. A manual workflow run builds the same
+artifacts without creating a release.
+
+After downloading the executable for your platform from a release:
+
+```bash
+chmod +x ./symphony-v0.0.1-macos_arm64
+./symphony-v0.0.1-macos_arm64 ./WORKFLOW.md
+```
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:

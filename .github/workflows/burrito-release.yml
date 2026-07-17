@@ -1,0 +1,143 @@
+name: burrito-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linux_x86_64, linux_arm64, macos_x86_64, macos_arm64]
+    defaults:
+      run:
+        working-directory: elixir
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          install: true
+          cache: true
+          working_directory: elixir
+
+      - name: Install Zig
+        run: mise install zig@0.15.2
+
+      - name: Install xz
+        run: sudo apt-get update && sudo apt-get install -y xz-utils
+
+      - name: Install Mix dependencies
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+
+      - name: Verify release tag matches project version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          project_version="$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' mix.exs | head -n 1)"
+          expected_tag="v$project_version"
+
+          if test -z "$project_version" || test "$GITHUB_REF_NAME" != "$expected_tag"; then
+            echo "Release tag $GITHUB_REF_NAME does not match mix.exs version $project_version."
+            exit 1
+          fi
+
+      - name: Build Burrito executable
+        run: BURRITO_TARGET=${{ matrix.target }} MIX_ENV=prod mise exec zig@0.15.2 -- mix release symphony --overwrite
+
+      - name: Stage release assets
+        run: |
+          if test "$GITHUB_REF_TYPE" = "tag"; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="${GITHUB_SHA::7}"
+          fi
+
+          artifact="symphony-${version}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "burrito_out/symphony_${{ matrix.target }}" "dist/$artifact"
+          cd dist
+
+          sha256sum "$artifact" > "$artifact.sha256"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.target }}
+          path: elixir/dist/*
+          if-no-files-found: error
+
+  smoke:
+    name: smoke-${{ matrix.target }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux_x86_64
+            runner: ubuntu-24.04
+          - target: linux_arm64
+            runner: ubuntu-24.04-arm
+          - target: macos_x86_64
+            runner: macos-15-intel
+          - target: macos_arm64
+            runner: macos-14
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist
+
+      - name: Smoke test executable
+        run: |
+          artifact="$(find dist -type f ! -name '*.sha256' -print -quit)"
+          test -n "$artifact"
+          chmod +x "$artifact"
+
+          set +e
+          output="$(SYMPHONY_INSTALL_DIR="$RUNNER_TEMP/symphony-install" "$artifact" 2>&1)"
+          status=$?
+          set -e
+
+          test "$status" -eq 1
+          grep -F "This Symphony implementation is a low key engineering preview." <<<"$output"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*/* --clobber
+          else
+            gh release create "$TAG" dist/*/* --verify-tag --generate-notes
+          fi
