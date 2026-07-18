@@ -225,7 +225,7 @@ Filesystem workspace assigned to one issue identifier.
 Fields (logical):
 
 - `path` (absolute workspace path)
-- `workspace_key` (sanitized issue identifier)
+- `workspace_key` (collision-resistant sanitized issue identifier)
 - `created_now` (boolean, used to gate `after_create` hook)
 
 #### 4.1.5 Run Attempt
@@ -306,8 +306,9 @@ Fields:
   - Require uniqueness within the configured tracker scope.
 - `Workspace Key`
   - Derive from `issue.identifier` by replacing any character not in `[A-Za-z0-9._-]` with `_`.
-  - If sanitization changes the identifier, append a short stable hash of `issue.id` so two
-    distinct identifiers cannot collide after replacement.
+  - If sanitization changes the identifier, append a stable hash suffix of the original identifier
+    with at least 64 bits of entropy using only allowed workspace-key characters, making keys for
+    distinct identifiers that sanitize to the same text collision-resistant.
   - Use the resulting value for the workspace directory name.
 - `Normalized Issue State`
   - Compare states after trimming surrounding whitespace and applying `lowercase`.
@@ -538,11 +539,13 @@ Configuration is resolved in this order:
 1. Select the workflow file path (explicit runtime setting, otherwise cwd default).
 2. Parse YAML front matter into a raw config map.
 3. Apply built-in defaults for missing OPTIONAL fields.
-4. Resolve `$VAR_NAME` indirection only for config values that explicitly contain `$VAR_NAME`.
+4. Resolve `$VAR_NAME` indirection for config values that explicitly contain `$VAR_NAME`, plus any
+   adapter-owned fallback environment names documented for omitted provider fields.
 5. Coerce and validate typed values.
 
 Environment variables do not globally override YAML values. They are used only when a config value
-explicitly references them.
+explicitly references them, or when an adapter profile documents a host-side fallback for an
+omitted provider field. Such a fallback is adapter-local, not a cross-provider convention.
 
 Value coercion semantics:
 
@@ -761,6 +764,10 @@ An issue is dispatch-eligible only if all are true:
 - Global concurrency slots are available.
 - Per-state concurrency slots are available.
 
+For refresh and continuation checks, `issue_routable(issue)` means only that adapter-provided
+`dispatchable` is true and all `tracker.required_labels` match. State, claims, and concurrency are
+checked separately by the surrounding algorithm.
+
 Sorting order (stable intent):
 
 1. `priority` ascending for values `1..4`; all other integers and null sort after that bucket
@@ -795,20 +802,19 @@ Backoff formula:
 
 Retry handling behavior:
 
-1. Fetch active candidate issues (not all issues).
-2. Find the specific issue by `issue_id`.
-3. If not found, release claim.
-4. If found and still candidate-eligible:
+1. Refresh the specific issue with `fetch_issues_by_ids([issue_id])`.
+2. If not found, release claim.
+3. If found in a terminal state, clean its workspace and release claim.
+4. If found and still active and routable:
    - Dispatch if slots are available.
    - Otherwise requeue with error `no available orchestrator slots`.
-5. If found but no longer active, release claim.
+5. If found but no longer active or routable, release claim without dispatch.
 
 Note:
 
-- Terminal-state workspace cleanup is handled by startup cleanup and active-run reconciliation
-  (including terminal transitions for currently running issues).
-- Retry handling mainly operates on active candidates and releases claims when the issue is absent,
-  rather than performing terminal cleanup itself.
+- Terminal-state workspace cleanup is handled by startup cleanup, active-run reconciliation, and
+  retry refreshes that observe a terminal transition.
+- ID refresh avoids treating a terminal, non-active, or newly unroutable issue as merely absent.
 
 ### 8.5 Active Run Reconciliation
 
@@ -827,7 +833,8 @@ Part B: Tracker state refresh
 - Fetch current issue states for all running issue IDs.
 - For each running issue:
   - If tracker state is terminal: terminate worker and clean workspace.
-  - If tracker state is still active: update the in-memory issue snapshot.
+  - If tracker state is still active and routable: update the in-memory issue snapshot.
+  - If tracker state is active but no longer routable: terminate worker without workspace cleanup.
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
 
@@ -851,7 +858,7 @@ Workspace root:
 
 Per-issue workspace path:
 
-- `<workspace.root>/<sanitized_issue_identifier>`
+- `<workspace.root>/<workspace_key>`
 
 Workspace persistence:
 
@@ -864,7 +871,8 @@ Input: `issue.identifier`
 
 Algorithm summary:
 
-1. Sanitize identifier to `workspace_key`.
+1. Derive `workspace_key` using Section 4.2, including the stable original-identifier hash when
+   sanitization changes the identifier.
 2. Compute workspace path under workspace root.
 3. Ensure the workspace path exists as a directory.
 4. Mark `created_now=true` only if the directory was created during this call; otherwise
@@ -936,6 +944,8 @@ Invariant 3: Workspace key is sanitized.
 
 - Only `[A-Za-z0-9._-]` allowed in workspace directory names.
 - Replace all other characters with `_`.
+- If replacement changes the identifier, append a stable original-identifier hash suffix with at
+  least 64 bits of entropy so keys remain collision-resistant after sanitization.
 
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
@@ -1193,12 +1203,24 @@ An implementation MUST support these adapter operations:
    - IDs no longer visible in the configured scope are omitted; the orchestrator treats omission as
      "no longer visible" rather than inventing a synthetic state.
 
-Both operations return either `ok(list<Issue>)` or a typed adapter error. They are atomic from
-the scheduler's perspective after a paging or transport failure. A state-list call MAY omit and log
-an individually malformed provider record because it was never safe to dispatch. An ID-refresh call
-MUST fail instead of silently omitting a malformed requested record, because omission is meaningful.
-A successful `fetch_issues_by_ids` result is complete for that call. Output order is not
-significant, input IDs are treated as a set, and each dispatch ID appears at most once.
+Both operations return either `ok(list<Issue>)` or an adapter error. For portability, an adapter
+error SHOULD expose a stable category and human-readable message. An implementation MAY use a
+language-native tagged error, exception, tuple, or enum instead of a literal error object when its
+adapter profile documents how those public error forms map to category and message. The
+orchestrator relies only on success versus failure.
+
+The operations are atomic from the scheduler's perspective after a paging or transport failure. For
+these rules, a record is malformed only when the adapter cannot produce the required normalized
+fields (`id`, `identifier`, `title`, `state`, and explicit `dispatchable`) or cannot produce a
+valid `Issue` after applying the optional-field fallback rules in Section 11.3. Unusable nullable
+or best-effort provider metadata MAY normalize to `null`, an empty list, or omitted best-effort
+entries; that fallback alone does not make a record malformed.
+
+A state-list call MAY omit an individually malformed provider record because it was never safe to
+dispatch, and SHOULD log that omission. An ID-refresh call MUST fail instead of silently omitting a
+malformed requested record, because omission is meaningful. A successful
+`fetch_issues_by_ids` result is complete for that call. Output order is not significant, input IDs
+are treated as a set, and each dispatch ID appears at most once.
 
 The refresh operation returns full normalized snapshots, not only state strings, because label,
 assignment, routing, and provider-specific dispatchability can change while a run is active.
@@ -1219,15 +1241,18 @@ Each adapter owns:
 The orchestrator MUST NOT inspect provider payloads, assume that `issue.id` is an underlying
 ticket ID, or branch on provider-specific blocker, board, transition, or comment semantics.
 
-Each adapter MUST document a compact profile containing:
+Each adapter MUST publish a compact profile in implementation documentation, not only code,
+containing:
 
-- supported `tracker.kind` value;
-- `tracker.provider` keys, defaults, secret keys, and validation errors;
-- scope selection and pagination behavior;
+- exact supported `tracker.kind` value;
+- exact `tracker.provider` keys, defaults, secret keys/environment names, and validation errors;
+- scope selection, pagination behavior, and provider request limits;
 - `id` and `native_ref` mapping;
-- state, label, priority, timestamp, and `dispatchable` normalization;
-- provider-native tool names/schemas if any;
-- typed transport/auth/rate-limit error categories.
+- state, label, priority, timestamp, `dispatchable`, malformed-record, and optional-field
+  normalization;
+- provider-native tool names/schemas, mutation capability, scope, and result/error behavior if any;
+- mapping from public language-native error forms to portable transport/auth/rate-limit error
+  categories and human-readable messages.
 
 ### 11.3 Normalization Rules
 
@@ -1243,13 +1268,18 @@ Adapter output MUST satisfy Section 4.1.1. In addition:
   null/unknown unless an implementation documents a different mapping.
 - `created_at` and `updated_at` MUST represent parsed RFC 3339 instants or null; the in-memory
   timestamp type is implementation-defined.
+- Unusable provider values for nullable fields MAY normalize to `null`. Unusable best-effort
+  collection entries MAY be dropped; if no usable entries remain, use an empty list. These
+  fallbacks MUST NOT be used for `id`, `identifier`, `title`, `state`, or explicit
+  `dispatchable`.
 - Preserve provider spelling in `state`, but trim and lowercase only for scheduler comparisons.
 - `blocked_by` is best-effort metadata; adapters MUST NOT invent blocker semantics they cannot
   represent reliably.
 - `dispatchable` MUST be explicit. It is `true` only when provider-specific eligibility checks
   pass; the generic scheduler never tries to reconstruct those checks from `native_ref`.
 - `native_ref` MUST be null or a JSON-safe object containing only non-secret values safe to expose
-  in prompt/tool context; preserve it verbatim.
+  in prompt/tool context. If provider metadata cannot be represented safely, normalize
+  `native_ref` to null; otherwise preserve the retained object verbatim.
 
 ### 11.4 Error Handling Contract
 
@@ -1264,9 +1294,10 @@ RECOMMENDED adapter error categories:
 - `tracker_pagination` (pagination integrity failure)
 - `tracker_rate_limited`
 
-Every typed adapter error SHOULD include at least `category` and human-readable `message`.
-Adapters MAY add `retryable`, `retry_after_ms`, provider status, and provider-specific detail, but
-the orchestrator only relies on success vs. failure.
+For portability, every adapter profile MUST document how each public language-native error form
+maps to a stable `category` and human-readable `message`. A literal `{category, message}`
+object is not required. Adapters MAY add `retryable`, `retry_after_ms`, provider status, and
+provider-specific detail, but the orchestrator only relies on success vs. failure.
 
 Orchestrator behavior on tracker errors:
 
@@ -1623,10 +1654,10 @@ API design notes:
    - Stalled session (no activity)
 
 4. `Tracker Failures`
-   - API transport errors
-   - Non-200 status
-   - GraphQL errors
-   - malformed payloads
+   - Provider transport errors
+   - Non-success provider responses
+   - Provider-reported application errors
+   - Malformed payloads
 
 5. `Observability Failures`
    - Snapshot timeout
@@ -1845,7 +1876,7 @@ function reconcile_running_issues(state):
   for issue in refreshed:
     if issue.state in terminal_states:
       state = terminate_running_issue(state, issue.id, cleanup_workspace=true)
-    else if issue.state in active_states:
+    else if issue.state in active_states and issue_routable(issue):
       state.running[issue.id].issue = issue
     else:
       state = terminate_running_issue(state, issue.id, cleanup_workspace=false)
@@ -1945,7 +1976,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
 
     issue = refreshed_issue[0]
 
-    if issue.state is not active:
+    if issue.state is not active or not issue_routable(issue):
       break
 
     if turn_number >= max_turns:
@@ -2062,7 +2093,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `before_run` hook runs before each attempt and failure/timeouts abort the current attempt
 - `after_run` hook runs after each attempt and failure/timeouts are logged and ignored
 - `before_remove` hook runs on cleanup and failures/timeouts are ignored
-- Workspace path sanitization and root containment invariants are enforced before agent launch
+- Workspace path sanitization, stable original-identifier-hash collision resistance, and root
+  containment invariants are enforced before agent launch
+- Identifiers unchanged by sanitization keep their deterministic workspace key; conformance tests
+  include distinct identifiers that sanitize to the same text and verify distinct keys
 - Agent launch uses the per-issue workspace path as cwd and rejects out-of-root paths
 
 ### 17.3 Issue Tracker Adapter
@@ -2072,11 +2106,16 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Empty `fetch_issues_by_ids([])` returns empty without a provider call
 - Pagination preserves order across multiple pages
 - Labels are normalized to lowercase
+- Unusable optional provider metadata normalizes to null/empty without hiding valid required fields
+- State-list reads log omitted malformed required records; ID refresh fails malformed requested
+  records instead of treating them as invisible
 - Refresh by opaque dispatch ID returns full normalized issue snapshots
 - A distinct provider ticket ID or project-item ID is preserved in `native_ref` when needed
 - Provider-specific routing/blocker/assignment rules become explicit `dispatchable`
+- The adapter publishes the required compact profile for config, scope, normalization, tools, and
+  portable error mapping
 - Error mapping covers config, request, non-success response, malformed payload, pagination, and
-  rate limiting
+  rate limiting, including documented category/message mappings for language-native errors
 
 ### 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
@@ -2176,7 +2215,7 @@ Use the same validation profiles as Section 17:
 - Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt
 - Polling orchestrator with single-authority mutable state
 - Issue tracker adapter with state-list + ID-refresh reads
-- Workspace manager with sanitized per-issue workspaces
+- Workspace manager with sanitized, collision-resistant per-issue workspaces
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
 - Coding-agent app-server subprocess client with the targeted transport/framing protocol

@@ -140,7 +140,7 @@ defmodule SymphonyElixir.Linear.Client do
   def graphql(query, variables \\ %{}, opts \\ [])
       when is_binary(query) and is_map(variables) and is_list(opts) do
     payload = build_graphql_payload(query, variables, Keyword.get(opts, :operation_name))
-    tracker_settings = Keyword.get(opts, :tracker_settings, Config.settings!().tracker)
+    tracker_settings = Keyword.get_lazy(opts, :tracker_settings, fn -> Config.settings!().tracker end)
 
     request_fun =
       Keyword.get(opts, :request_fun, fn request_payload, headers ->
@@ -410,10 +410,21 @@ defmodule SymphonyElixir.Linear.Client do
       nodes
       |> Enum.map(&normalize_issue(&1, assignee_filter))
 
-    case {malformed_policy, Enum.any?(issues, &is_nil/1)} do
-      {:error_on_malformed, true} -> {:error, :linear_unknown_payload}
-      {:drop_malformed, _} -> {:ok, Enum.reject(issues, &is_nil/1)}
-      {_, false} -> {:ok, issues}
+    malformed_count = Enum.count(issues, &is_nil/1)
+
+    case {malformed_policy, malformed_count > 0} do
+      {:error_on_malformed, true} ->
+        {:error, :linear_unknown_payload}
+
+      {:drop_malformed, true} ->
+        Logger.warning("Dropping malformed Linear issue records count=#{malformed_count}")
+        {:ok, Enum.reject(issues, &is_nil/1)}
+
+      {:drop_malformed, false} ->
+        {:ok, issues}
+
+      {_, false} ->
+        {:ok, issues}
     end
   end
 

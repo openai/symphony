@@ -1349,30 +1349,44 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
     custom_secret_env = "SYMP_CUSTOM_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
+    profile_marker_env = "SYMP_TEST_BASH_PROFILE_LOADED_#{System.unique_integer([:positive])}"
     previous_secret = System.get_env("LINEAR_API_KEY")
     previous_custom_secret = System.get_env(custom_secret_env)
+    previous_home = System.get_env("HOME")
     previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
     on_exit(fn ->
       restore_env("LINEAR_API_KEY", previous_secret)
       restore_env(custom_secret_env, previous_custom_secret)
+      restore_env("HOME", previous_home)
       restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
     end)
 
     try do
+      bash_home = Path.join(test_root, "bash-home")
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-SECRET")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-secret-env.trace")
 
+      File.mkdir_p!(bash_home)
       File.mkdir_p!(workspace)
+
+      File.write!(Path.join(bash_home, ".bash_profile"), """
+      export LINEAR_API_KEY='profile-canonical-secret-that-must-not-reach-child'
+      export #{custom_secret_env}='profile-custom-secret-that-must-not-reach-child'
+      export #{profile_marker_env}=1
+      """)
+
       System.put_env("LINEAR_API_KEY", "canonical-secret-that-must-not-reach-child")
       System.put_env(custom_secret_env, "custom-secret-that-must-not-reach-child")
+      System.put_env("HOME", bash_home)
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
 
       File.write!(codex_binary, """
       #!/bin/sh
       trace_file="$SYMP_TEST_CODEx_TRACE"
+      printf 'PROFILE_LOADED:%s\n' "$#{profile_marker_env}" >> "$trace_file"
       printf 'CANONICAL_SECRET:%s\n' "$LINEAR_API_KEY" >> "$trace_file"
       printf 'CUSTOM_SECRET:%s\n' "$#{custom_secret_env}" >> "$trace_file"
       count=0
@@ -1420,6 +1434,7 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Do not inherit tracker auth", issue)
+      assert File.read!(trace_file) =~ "PROFILE_LOADED:1\n"
       assert File.read!(trace_file) =~ "CANONICAL_SECRET:\n"
       assert File.read!(trace_file) =~ "CUSTOM_SECRET:\n"
       refute File.read!(trace_file) =~ "secret-that-must-not-reach-child"

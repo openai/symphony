@@ -90,7 +90,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
-        DynamicTool.execute(tool, arguments, binding: dynamic_tool_binding, issue: issue)
+        DynamicTool.execute(tool, arguments, dynamic_tool_binding, issue: issue)
       end)
 
     case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
@@ -204,7 +204,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
+            args: [~c"-lc", String.to_charlist(local_launch_command(dynamic_tool_binding))],
             cd: String.to_charlist(workspace),
             env: tracker_secret_port_env(dynamic_tool_binding),
             line: @port_line_bytes
@@ -218,6 +218,15 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_port(workspace, worker_host, dynamic_tool_binding) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, dynamic_tool_binding)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
+  end
+
+  defp local_launch_command(dynamic_tool_binding) do
+    [
+      tracker_secret_unset_command(dynamic_tool_binding),
+      "exec #{Config.settings!().codex.command}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" && ")
   end
 
   defp remote_launch_command(workspace, dynamic_tool_binding) when is_binary(workspace) do

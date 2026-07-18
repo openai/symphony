@@ -11,9 +11,20 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec validate_config(map()) :: :ok | {:error, term()}
   def validate_config(tracker_settings) do
     cond do
-      not present_string?(tracker_settings.api_key) -> {:error, :missing_linear_api_token}
-      not present_string?(tracker_settings.project_slug) -> {:error, :missing_linear_project_slug}
-      true -> :ok
+      not present_string?(tracker_settings.endpoint) ->
+        {:error, :invalid_linear_endpoint}
+
+      not present_string?(tracker_settings.api_key) ->
+        {:error, :missing_linear_api_token}
+
+      not present_string?(tracker_settings.project_slug) ->
+        {:error, :missing_linear_project_slug}
+
+      not is_nil(tracker_settings.assignee) and not present_string?(tracker_settings.assignee) ->
+        {:error, :invalid_linear_assignee}
+
+      true ->
+        :ok
     end
   end
 

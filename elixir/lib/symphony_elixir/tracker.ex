@@ -24,7 +24,6 @@ defmodule SymphonyElixir.Tracker do
 
   @optional_callbacks agent_tool_specs: 0,
                       execute_agent_tool: 3,
-                      secret_environment_names: 1,
                       validate_config: 1
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -35,26 +34,6 @@ defmodule SymphonyElixir.Tracker do
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_ids(issue_ids) do
     adapter().fetch_issues_by_ids(issue_ids)
-  end
-
-  @spec agent_tool_specs() :: [map()]
-  def agent_tool_specs do
-    adapter_agent_tool_specs(adapter())
-  end
-
-  @spec execute_agent_tool(String.t(), term(), keyword()) :: map()
-  def execute_agent_tool(tool, arguments, opts \\ []) do
-    execute_agent_tool_with_adapter(adapter(), tool, arguments, opts)
-  end
-
-  @doc """
-  Environment variables containing tracker credentials that must not be
-  inherited by the Codex child process.
-  """
-  @spec secret_environment_names() :: [String.t()]
-  def secret_environment_names do
-    tracker_settings = Config.settings!().tracker
-    adapter_secret_environment_names(adapter_for_settings!(tracker_settings), tracker_settings)
   end
 
   @doc """
@@ -137,11 +116,7 @@ defmodule SymphonyElixir.Tracker do
   end
 
   defp adapter_secret_environment_names(adapter, tracker_settings) do
-    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :secret_environment_names, 1) do
-      adapter.secret_environment_names(tracker_settings)
-    else
-      []
-    end
+    adapter.secret_environment_names(tracker_settings)
   end
 
   defp unsupported_agent_tool_response(tool) do

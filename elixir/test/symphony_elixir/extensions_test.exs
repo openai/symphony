@@ -209,9 +209,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert SymphonyElixir.Tracker.adapter() == Memory
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_ids(["issue-1"])
-    assert SymphonyElixir.Tracker.agent_tool_specs() == []
-    assert SymphonyElixir.Tracker.secret_environment_names() == []
-    assert SymphonyElixir.Tracker.execute_agent_tool("not_a_memory_tool", %{})["success"] == false
 
     binding = SymphonyElixir.Tracker.bind_agent_tools()
     assert binding.adapter == Memory
@@ -227,7 +224,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
-    assert SymphonyElixir.Tracker.secret_environment_names() == ["LINEAR_API_KEY"]
+    assert SymphonyElixir.Tracker.bind_agent_tools().secret_environment_names == ["LINEAR_API_KEY"]
   end
 
   test "linear adapter delegates reads and advertises its native agent tool" do

@@ -414,10 +414,12 @@ defmodule SymphonyElixir.Config.Schema do
           resolved_assignee =
             resolve_secret_setting(linear_provider["assignee"], System.get_env("LINEAR_ASSIGNEE"))
 
-          {resolved_api_key, resolved_assignee,
-           linear_provider
-           |> Map.put("api_key", resolved_api_key)
-           |> Map.put("assignee", resolved_assignee), ["LINEAR_API_KEY" | env_reference_names([linear_provider["api_key"]])]}
+          {
+            resolved_api_key,
+            resolved_assignee,
+            linear_provider,
+            ["LINEAR_API_KEY" | env_reference_names([linear_provider["api_key"]])]
+          }
 
         _ ->
           {settings.tracker.api_key, settings.tracker.assignee, provider, []}
@@ -496,6 +498,8 @@ defmodule SymphonyElixir.Config.Schema do
       resolved -> resolved
     end
   end
+
+  defp resolve_secret_setting(value, _fallback), do: value
 
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do

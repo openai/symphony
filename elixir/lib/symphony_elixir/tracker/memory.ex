@@ -30,6 +30,9 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
+  @spec secret_environment_names(map()) :: [String.t()]
+  def secret_environment_names(_tracker_settings), do: []
+
   defp configured_issues do
     Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
   end

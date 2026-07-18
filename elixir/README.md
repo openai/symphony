@@ -196,6 +196,48 @@ codex:
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
+### Linear adapter profile
+
+- Config: use `tracker.kind: linear` with `tracker.provider.endpoint` (default
+  `https://api.linear.app/graphql`), `api_key` (defaults to `LINEAR_API_KEY` and accepts
+  `$VAR`), required `project_slug`, and optional `assignee` (a Linear user ID or `me`,
+  defaulting to `LINEAR_ASSIGNEE`).
+  The legacy flat `tracker.endpoint`, `api_key`, `project_slug`, and `assignee` aliases remain
+  supported. `required_labels`, `active_states`, and `terminal_states` stay under `tracker`.
+- Scope and paging: candidate reads filter the configured project slug and requested state names,
+  following Linear pages of 50. ID refreshes are also project-scoped and batch up to 50 IDs. Empty
+  state/ID lists return `{:ok, []}` without a Linear request.
+- Identity and normalization: `issue.id` is the Linear issue ID and `issue.native_ref` is currently
+  `nil`. Records missing a nonblank ID, identifier, title, or state are dropped from candidate
+  pages and fail ID refreshes. State keeps Linear's spelling; integer priorities are preserved and
+  other priority values become `nil`; RFC 3339 timestamps are parsed and unusable timestamps become
+  `nil`. Labels are trimmed, lowercased, deduplicated, and blanks are dropped; blockers come from
+  inverse `blocks` relations.
+- Dispatchability: the adapter marks an issue dispatchable only when optional assignee routing
+  matches and a `Todo` issue has no non-terminal blocker. The generic scheduler then applies
+  active/terminal states, required labels, claims, retries, and concurrency.
+- Tool: the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
+  object with nonblank `query` and optional object `variables`. Symphony executes it host-side
+  with the session-bound endpoint/token and strips declared token environment variables from the
+  Codex child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
+  whatever the configured Linear token can access.
+- Responsibility and errors: `linear_graphql` adds no idempotency key, retry, scope guard, or
+  rate-limit policy, so workflows own idempotent mutations and handling provider errors. Read/config
+  failures use `{:error, :missing_linear_api_token}`, `{:error, :missing_linear_project_slug}`,
+  `{:error, :invalid_linear_endpoint}`, `{:error, :invalid_linear_assignee}`,
+  `{:error, :missing_linear_viewer_identity}`, `{:error, {:linear_api_status, status}}`,
+  `{:error, {:linear_api_request, reason}}`, `{:error, {:linear_graphql_errors, errors}}`,
+  `{:error, :linear_unknown_payload}`, or `{:error, :linear_missing_end_cursor}`. Tool results
+  are maps with `"success"`, JSON-string `"output"`, and text `"contentItems"`; invalid
+  arguments, missing auth, and transport failures return `"success" => false` with
+  `{"error": {"message": ...}}`, while top-level GraphQL errors preserve the response body with
+  `"success" => false`.
+  For portable reporting, map missing/invalid token, project, endpoint, assignee, or viewer errors
+  to `tracker_config` or `tracker_auth`, request failures to `tracker_transport`, non-200 responses to
+  `tracker_response` (`429` is `tracker_rate_limited`), GraphQL/unknown payload failures to
+  `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
+  human-readable provider detail.
+
 ## Web dashboard
 
 The observability UI now runs on a minimal Phoenix stack:

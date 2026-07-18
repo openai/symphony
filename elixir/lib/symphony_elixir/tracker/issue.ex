@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Tracker.Issue do
   differ from a provider's underlying issue ID when the scheduled item is a
   board or project entry. `native_ref` carries non-secret provider identifiers
   needed by provider-native agent tools. `identifier` remains the human-readable
-  workspace key and must be unique within that scope.
+  value used to derive the workspace key and must be unique within that scope.
   """
 
   defstruct [

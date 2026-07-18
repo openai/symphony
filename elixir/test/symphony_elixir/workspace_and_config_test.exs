@@ -53,7 +53,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, second_workspace} = Workspace.create_for_issue("MT/Det")
 
     assert first_workspace == second_workspace
-    assert Path.basename(first_workspace) == "MT_Det"
+    assert Path.basename(first_workspace) == Workspace.workspace_key("MT/Det")
+    assert String.starts_with?(Path.basename(first_workspace), "MT_Det--")
   end
 
   test "workspace keys disambiguate identifiers that sanitize to the same path" do
@@ -70,13 +71,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       underscore_issue = %Issue{id: "dispatch-underscore", identifier: "team_a-1"}
 
       assert {:ok, slash_workspace} = Workspace.create_for_issue(slash_issue)
+      assert {:ok, ^slash_workspace} = Workspace.create_for_issue("team/a-1")
       assert {:ok, underscore_workspace} = Workspace.create_for_issue(underscore_issue)
 
       refute slash_workspace == underscore_workspace
       assert Path.basename(underscore_workspace) == "team_a-1"
       assert String.starts_with?(Path.basename(slash_workspace), "team_a-1--")
 
-      assert :ok = Workspace.remove_issue_workspaces(slash_issue)
+      assert :ok = Workspace.remove_issue_workspaces("team/a-1")
       refute File.exists?(slash_workspace)
       assert File.exists?(underscore_workspace)
     after
@@ -547,8 +549,27 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert log =~ "Variable \\\"$ids\\\" got invalid value"
   end
 
-  test "linear graphql honors a bound tracker-settings snapshot" do
+  test "linear graphql honors a bound tracker-settings snapshot without loading live config" do
     parent = self()
+    original_workflow_path = Workflow.workflow_file_path()
+    workflow_store_pid = Process.whereis(WorkflowStore)
+
+    missing_workflow_path =
+      Path.join(System.tmp_dir!(), "missing-bound-workflow-#{System.unique_integer([:positive])}.md")
+
+    on_exit(fn ->
+      Workflow.set_workflow_file_path(original_workflow_path)
+
+      if is_pid(workflow_store_pid) and is_nil(Process.whereis(WorkflowStore)) do
+        Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
+      end
+    end)
+
+    if is_pid(Process.whereis(WorkflowStore)) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+    end
+
+    Workflow.set_workflow_file_path(missing_workflow_path)
 
     assert {:ok, %{"data" => %{"viewer" => %{"id" => "viewer-bound"}}}} =
              Client.graphql(
@@ -1080,6 +1101,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     config = Config.settings!()
     assert config.tracker.api_key == api_key
+    assert config.tracker.provider["api_key"] == "$#{api_key_env_var}"
     assert config.tracker.secret_environment_names == ["LINEAR_API_KEY", api_key_env_var]
     assert config.workspace.root == Path.expand(workspace_root)
     assert config.codex.command == "#{codex_bin} app-server"
@@ -1111,6 +1133,41 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "assignee" => nil,
              "extra" => %{"team" => "platform"}
            }
+  end
+
+  test "linear adapter rejects invalid provider values without crashing config parsing" do
+    assert {:ok, invalid_secret_settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{api_key: 123, project_slug: "project"}
+               }
+             })
+
+    assert {:error, :missing_linear_api_token} =
+             Config.validate_settings(invalid_secret_settings)
+
+    assert {:ok, invalid_endpoint_settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{api_key: "token", project_slug: "project", endpoint: 123}
+               }
+             })
+
+    assert {:error, :invalid_linear_endpoint} =
+             Config.validate_settings(invalid_endpoint_settings)
+
+    assert {:ok, invalid_assignee_settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{api_key: "token", project_slug: "project", assignee: 123}
+               }
+             })
+
+    assert {:error, :invalid_linear_assignee} =
+             Config.validate_settings(invalid_assignee_settings)
   end
 
   test "schema does not inject linear defaults before an adapter is selected" do
