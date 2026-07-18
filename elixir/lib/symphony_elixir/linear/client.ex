@@ -4,7 +4,8 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Tracker.Issue
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
@@ -55,8 +56,8 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @query_by_ids """
-  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
-    issues(filter: {id: {in: $ids}}, first: $first) {
+  query SymphonyLinearIssuesById($ids: [ID!]!, $projectSlug: String!, $first: Int!, $relationFirst: Int!) {
+    issues(filter: {id: {in: $ids}, project: {slugId: {eq: $projectSlug}}}, first: $first) {
       nodes {
         id
         identifier
@@ -103,50 +104,24 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
-  @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_candidate_issues do
-    tracker = Config.settings!().tracker
-    project_slug = tracker.project_slug
-
-    cond do
-      is_nil(tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      is_nil(project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      true ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(project_slug, tracker.active_states, assignee_filter)
-        end
-    end
-  end
-
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
     normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
 
-    if normalized_states == [] do
-      {:ok, []}
-    else
-      tracker = Config.settings!().tracker
-      project_slug = tracker.project_slug
+    case normalized_states do
+      [] ->
+        {:ok, []}
 
-      cond do
-        is_nil(tracker.api_key) ->
-          {:error, :missing_linear_api_token}
-
-        is_nil(project_slug) ->
-          {:error, :missing_linear_project_slug}
-
-        true ->
-          do_fetch_by_states(project_slug, normalized_states, nil)
-      end
+      states ->
+        with {:ok, tracker} <- configured_tracker_for_read(),
+             {:ok, assignee_filter} <- routing_assignee_filter() do
+          do_fetch_by_states(tracker.project_slug, states, assignee_filter)
+        end
     end
   end
 
-  @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
+  @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(issue_ids) when is_list(issue_ids) do
     ids = Enum.uniq(issue_ids)
 
     case ids do
@@ -154,8 +129,9 @@ defmodule SymphonyElixir.Linear.Client do
         {:ok, []}
 
       ids ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_issue_states(ids, assignee_filter)
+        with {:ok, tracker} <- configured_tracker_for_read(),
+             {:ok, assignee_filter} <- routing_assignee_filter() do
+          do_fetch_issue_states(ids, tracker.project_slug, assignee_filter)
         end
     end
   end
@@ -164,9 +140,14 @@ defmodule SymphonyElixir.Linear.Client do
   def graphql(query, variables \\ %{}, opts \\ [])
       when is_binary(query) and is_map(variables) and is_list(opts) do
     payload = build_graphql_payload(query, variables, Keyword.get(opts, :operation_name))
-    request_fun = Keyword.get(opts, :request_fun, &post_graphql_request/2)
+    tracker_settings = Keyword.get(opts, :tracker_settings, Config.settings!().tracker)
 
-    with {:ok, headers} <- graphql_headers(),
+    request_fun =
+      Keyword.get(opts, :request_fun, fn request_payload, headers ->
+        post_graphql_request(request_payload, headers, tracker_settings.endpoint)
+      end)
+
+    with {:ok, headers} <- graphql_headers(tracker_settings),
          {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
       {:ok, body}
     else
@@ -221,9 +202,9 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   @doc false
-  @spec fetch_issue_states_by_ids_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+  @spec fetch_issues_by_ids_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
           {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issue_states_by_ids_for_test(issue_ids, graphql_fun)
+  def fetch_issues_by_ids_for_test(issue_ids, graphql_fun)
       when is_list(issue_ids) and is_function(graphql_fun, 2) do
     ids = Enum.uniq(issue_ids)
 
@@ -232,7 +213,7 @@ defmodule SymphonyElixir.Linear.Client do
         {:ok, []}
 
       ids ->
-        do_fetch_issue_states(ids, nil, graphql_fun)
+        do_fetch_issue_states(ids, "test-project", nil, graphql_fun)
     end
   end
 
@@ -271,35 +252,44 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp finalize_paginated_issues(acc_issues) when is_list(acc_issues), do: Enum.reverse(acc_issues)
 
-  defp do_fetch_issue_states(ids, assignee_filter) do
-    do_fetch_issue_states(ids, assignee_filter, &graphql/2)
+  defp do_fetch_issue_states(ids, project_slug, assignee_filter) do
+    do_fetch_issue_states(ids, project_slug, assignee_filter, &graphql/2)
   end
 
-  defp do_fetch_issue_states(ids, assignee_filter, graphql_fun)
-       when is_list(ids) and is_function(graphql_fun, 2) do
+  defp do_fetch_issue_states(ids, project_slug, assignee_filter, graphql_fun)
+       when is_list(ids) and is_binary(project_slug) and is_function(graphql_fun, 2) do
     issue_order_index = issue_order_index(ids)
-    do_fetch_issue_states_page(ids, assignee_filter, graphql_fun, [], issue_order_index)
+    do_fetch_issue_states_page(ids, project_slug, assignee_filter, graphql_fun, [], issue_order_index)
   end
 
-  defp do_fetch_issue_states_page([], _assignee_filter, _graphql_fun, acc_issues, issue_order_index) do
+  defp do_fetch_issue_states_page([], _project_slug, _assignee_filter, _graphql_fun, acc_issues, issue_order_index) do
     acc_issues
     |> finalize_paginated_issues()
     |> sort_issues_by_requested_ids(issue_order_index)
     |> then(&{:ok, &1})
   end
 
-  defp do_fetch_issue_states_page(ids, assignee_filter, graphql_fun, acc_issues, issue_order_index) do
+  defp do_fetch_issue_states_page(ids, project_slug, assignee_filter, graphql_fun, acc_issues, issue_order_index) do
     {batch_ids, rest_ids} = Enum.split(ids, @issue_page_size)
 
     case graphql_fun.(@query_by_ids, %{
            ids: batch_ids,
+           projectSlug: project_slug,
            first: length(batch_ids),
            relationFirst: @issue_page_size
          }) do
       {:ok, body} ->
-        with {:ok, issues} <- decode_linear_response(body, assignee_filter) do
+        with {:ok, issues} <- decode_linear_response_strict(body, assignee_filter) do
           updated_acc = prepend_page_issues(issues, acc_issues)
-          do_fetch_issue_states_page(rest_ids, assignee_filter, graphql_fun, updated_acc, issue_order_index)
+
+          do_fetch_issue_states_page(
+            rest_ids,
+            project_slug,
+            assignee_filter,
+            graphql_fun,
+            updated_acc,
+            issue_order_index
+          )
         end
 
       {:error, reason} ->
@@ -380,8 +370,8 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  defp graphql_headers do
-    case Config.settings!().tracker.api_key do
+  defp graphql_headers(tracker_settings) do
+    case tracker_settings.api_key do
       nil ->
         {:error, :missing_linear_api_token}
 
@@ -394,28 +384,44 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  defp post_graphql_request(payload, headers) do
-    Req.post(Config.settings!().tracker.endpoint,
+  defp post_graphql_request(payload, headers, endpoint) do
+    Req.post(endpoint,
       headers: headers,
       json: payload,
       connect_options: [timeout: 30_000]
     )
   end
 
-  defp decode_linear_response(%{"data" => %{"issues" => %{"nodes" => nodes}}}, assignee_filter) do
+  defp decode_linear_response(response, assignee_filter) do
+    decode_linear_response(response, assignee_filter, :drop_malformed)
+  end
+
+  defp decode_linear_response_strict(response, assignee_filter) do
+    decode_linear_response(response, assignee_filter, :error_on_malformed)
+  end
+
+  defp decode_linear_response(
+         %{"data" => %{"issues" => %{"nodes" => nodes}}},
+         assignee_filter,
+         malformed_policy
+       )
+       when is_list(nodes) do
     issues =
       nodes
       |> Enum.map(&normalize_issue(&1, assignee_filter))
-      |> Enum.reject(&is_nil(&1))
 
-    {:ok, issues}
+    case {malformed_policy, Enum.any?(issues, &is_nil/1)} do
+      {:error_on_malformed, true} -> {:error, :linear_unknown_payload}
+      {:drop_malformed, _} -> {:ok, Enum.reject(issues, &is_nil/1)}
+      {_, false} -> {:ok, issues}
+    end
   end
 
-  defp decode_linear_response(%{"errors" => errors}, _assignee_filter) do
+  defp decode_linear_response(%{"errors" => errors}, _assignee_filter, _malformed_policy) do
     {:error, {:linear_graphql_errors, errors}}
   end
 
-  defp decode_linear_response(_unknown, _assignee_filter) do
+  defp decode_linear_response(_unknown, _assignee_filter, _malformed_policy) do
     {:error, :linear_unknown_payload}
   end
 
@@ -446,30 +452,69 @@ defmodule SymphonyElixir.Linear.Client do
   defp next_page_cursor(_), do: :done
 
   defp normalize_issue(issue, assignee_filter) when is_map(issue) do
-    assignee = issue["assignee"]
+    state_name = get_in(issue, ["state", "name"])
 
-    %Issue{
-      id: issue["id"],
-      identifier: issue["identifier"],
-      title: issue["title"],
-      description: issue["description"],
-      priority: parse_priority(issue["priority"]),
-      state: get_in(issue, ["state", "name"]),
-      branch_name: issue["branchName"],
-      url: issue["url"],
-      assignee_id: assignee_field(assignee, "id"),
-      blocked_by: extract_blockers(issue),
-      labels: extract_labels(issue),
-      assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
-      created_at: parse_datetime(issue["createdAt"]),
-      updated_at: parse_datetime(issue["updatedAt"])
-    }
+    if Enum.all?([issue["id"], issue["identifier"], issue["title"], state_name], &present_string?/1) do
+      assignee = issue["assignee"]
+      blockers = extract_blockers(issue)
+
+      %Issue{
+        id: issue["id"],
+        identifier: issue["identifier"],
+        title: issue["title"],
+        description: issue["description"],
+        priority: parse_priority(issue["priority"]),
+        state: state_name,
+        branch_name: issue["branchName"],
+        url: issue["url"],
+        assignee_id: assignee_field(assignee, "id"),
+        blocked_by: blockers,
+        labels: extract_labels(issue),
+        dispatchable: dispatchable?(state_name, blockers, assignee, assignee_filter),
+        created_at: parse_datetime(issue["createdAt"]),
+        updated_at: parse_datetime(issue["updatedAt"])
+      }
+    end
   end
 
   defp normalize_issue(_issue, _assignee_filter), do: nil
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
   defp assignee_field(_assignee, _field), do: nil
+
+  defp dispatchable?(state_name, blockers, assignee, assignee_filter) do
+    assigned_to_worker?(assignee, assignee_filter) and
+      not blocked_before_dispatch?(state_name, blockers)
+  end
+
+  defp blocked_before_dispatch?(state_name, blockers)
+       when is_binary(state_name) and is_list(blockers) do
+    normalize_state_name(state_name) == "todo" and
+      Enum.any?(blockers, fn
+        %{state: blocker_state} when is_binary(blocker_state) ->
+          not terminal_state?(blocker_state)
+
+        _ ->
+          true
+      end)
+  end
+
+  defp blocked_before_dispatch?(_state_name, _blockers), do: false
+
+  defp terminal_state?(state_name) when is_binary(state_name) do
+    terminal_states =
+      Config.settings!().tracker.terminal_states
+      |> Enum.map(&normalize_state_name/1)
+      |> MapSet.new()
+
+    MapSet.member?(terminal_states, normalize_state_name(state_name))
+  end
+
+  defp normalize_state_name(state_name) when is_binary(state_name) do
+    state_name
+    |> String.trim()
+    |> String.downcase()
+  end
 
   defp assigned_to_worker?(_assignee, nil), do: true
 
@@ -494,6 +539,16 @@ defmodule SymphonyElixir.Linear.Client do
 
       assignee ->
         build_assignee_filter(assignee)
+    end
+  end
+
+  defp configured_tracker_for_read do
+    tracker = Config.settings!().tracker
+
+    cond do
+      is_nil(tracker.api_key) -> {:error, :missing_linear_api_token}
+      is_nil(tracker.project_slug) -> {:error, :missing_linear_project_slug}
+      true -> {:ok, tracker}
     end
   end
 
@@ -541,8 +596,10 @@ defmodule SymphonyElixir.Linear.Client do
   defp extract_labels(%{"labels" => %{"nodes" => labels}}) when is_list(labels) do
     labels
     |> Enum.map(& &1["name"])
-    |> Enum.reject(&is_nil/1)
+    |> Enum.filter(&is_binary/1)
     |> Enum.map(&(String.trim(&1) |> String.downcase()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
   end
 
   defp extract_labels(_), do: []
@@ -571,6 +628,9 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_blockers(_), do: []
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
 
   defp parse_datetime(nil), do: nil
 

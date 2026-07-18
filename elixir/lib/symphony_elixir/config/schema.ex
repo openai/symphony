@@ -8,6 +8,9 @@ defmodule SymphonyElixir.Config.Schema do
   alias SymphonyElixir.PathSafety
 
   @primary_key false
+  @linear_endpoint "https://api.linear.app/graphql"
+  @linear_active_states ["Todo", "In Progress"]
+  @linear_terminal_states ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
 
   @type t :: %__MODULE__{}
 
@@ -46,13 +49,15 @@ defmodule SymphonyElixir.Config.Schema do
 
     embedded_schema do
       field(:kind, :string)
-      field(:endpoint, :string, default: "https://api.linear.app/graphql")
+      field(:endpoint, :string)
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
+      field(:provider, :map, default: %{})
+      field(:secret_environment_names, {:array, :string}, default: [])
       field(:required_labels, {:array, :string}, default: [])
-      field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
-      field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      field(:active_states, {:array, :string})
+      field(:terminal_states, {:array, :string})
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -60,7 +65,17 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :provider,
+          :required_labels,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
       |> update_change(:required_labels, fn labels ->
@@ -332,7 +347,9 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec normalize_issue_state(String.t()) :: String.t()
   def normalize_issue_state(state_name) when is_binary(state_name) do
-    String.downcase(state_name)
+    state_name
+    |> String.trim()
+    |> String.downcase()
   end
 
   @doc false
@@ -351,7 +368,7 @@ defmodule SymphonyElixir.Config.Schema do
     validate_change(changeset, field, fn ^field, limits ->
       Enum.flat_map(limits, fn {state_name, limit} ->
         cond do
-          to_string(state_name) == "" ->
+          state_name |> to_string() |> String.trim() == "" ->
             [{field, "state names must not be blank"}]
 
           not is_integer(limit) or limit <= 0 ->
@@ -379,10 +396,55 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
+    provider = normalize_optional_map(settings.tracker.provider) || %{}
+
+    {api_key, assignee, provider, secret_environment_names} =
+      case settings.tracker.kind do
+        "linear" ->
+          linear_provider =
+            provider
+            |> Map.put_new("endpoint", settings.tracker.endpoint || @linear_endpoint)
+            |> Map.put_new("api_key", settings.tracker.api_key)
+            |> Map.put_new("project_slug", settings.tracker.project_slug)
+            |> Map.put_new("assignee", settings.tracker.assignee)
+
+          resolved_api_key =
+            resolve_secret_setting(linear_provider["api_key"], System.get_env("LINEAR_API_KEY"))
+
+          resolved_assignee =
+            resolve_secret_setting(linear_provider["assignee"], System.get_env("LINEAR_ASSIGNEE"))
+
+          {resolved_api_key, resolved_assignee,
+           linear_provider
+           |> Map.put("api_key", resolved_api_key)
+           |> Map.put("assignee", resolved_assignee), ["LINEAR_API_KEY" | env_reference_names([linear_provider["api_key"]])]}
+
+        _ ->
+          {settings.tracker.api_key, settings.tracker.assignee, provider, []}
+      end
+
+    {active_states, terminal_states} =
+      case settings.tracker.kind do
+        kind when kind in ["linear", "memory"] ->
+          {
+            settings.tracker.active_states || @linear_active_states,
+            settings.tracker.terminal_states || @linear_terminal_states
+          }
+
+        _ ->
+          {settings.tracker.active_states, settings.tracker.terminal_states}
+      end
+
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      | endpoint: Map.get(provider, "endpoint", settings.tracker.endpoint),
+        api_key: api_key,
+        project_slug: Map.get(provider, "project_slug", settings.tracker.project_slug),
+        assignee: assignee,
+        provider: provider,
+        secret_environment_names: Enum.uniq(secret_environment_names),
+        active_states: active_states,
+        terminal_states: terminal_states
     }
 
     workspace = %{
@@ -478,6 +540,15 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp env_reference_name(_value), do: :error
+
+  defp env_reference_names(values) when is_list(values) do
+    Enum.flat_map(values, fn value ->
+      case env_reference_name(value) do
+        {:ok, env_name} -> [env_name]
+        :error -> []
+      end
+    end)
+  end
 
   defp resolve_env_token(env_name) do
     case System.get_env(env_name) do

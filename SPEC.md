@@ -15,9 +15,9 @@ behavior.
 
 ## 1. Problem Statement
 
-Symphony is a long-running automation service that continuously reads work from an issue tracker
-(Linear in this specification version), creates an isolated workspace for each issue, and runs a
-coding agent session for that issue inside the workspace.
+Symphony is a long-running automation service that continuously reads work from a configured issue
+tracker, creates an isolated workspace for each issue, and runs a coding agent session for that
+issue inside the workspace.
 
 The service solves four operational problems:
 
@@ -37,7 +37,9 @@ Important boundary:
 
 - Symphony is a scheduler/runner and tracker reader.
 - Ticket writes (state transitions, comments, PR links) are typically performed by the coding agent
-  using tools available in the workflow/runtime environment.
+  through provider-native tools executed by Symphony with the configured tracker credential.
+- When tracker credentials are supplied through host-side secret references, the coding-agent child
+  process does not need a duplicate tracker login or direct access to raw tracker credentials.
 - A successful run can end at a workflow-defined handoff state (for example `Human Review`), not
   necessarily `Done`.
 
@@ -80,11 +82,13 @@ Important boundary:
    - Applies defaults and environment variable indirection.
    - Performs validation used by the orchestrator before dispatch.
 
-3. `Issue Tracker Client`
+3. `Issue Tracker Adapter`
    - Fetches candidate issues in active states.
    - Fetches current states for specific issue IDs (reconciliation).
    - Fetches terminal-state issues during startup cleanup.
    - Normalizes tracker payloads into a stable issue model.
+   - MAY expose provider-native agent tools without adding provider-specific write APIs to the
+     orchestrator.
 
 4. `Orchestrator`
    - Owns the poll tick.
@@ -129,19 +133,21 @@ Symphony is easiest to port when kept in these layers:
 4. `Execution Layer` (workspace + agent subprocess)
    - Filesystem lifecycle, workspace preparation, coding-agent protocol.
 
-5. `Integration Layer` (Linear adapter)
+5. `Integration Layer` (selected tracker adapter)
    - API calls and normalization for tracker data.
+   - Provider-native agent tools and centralized tracker authentication.
 
 6. `Observability Layer` (logs + OPTIONAL status surface)
    - Operator visibility into orchestrator and agent behavior.
 
 ### 3.3 External Dependencies
 
-- Issue tracker API (Linear for `tracker.kind: linear` in this specification version).
+- One configured issue tracker API.
 - Local filesystem for workspaces and logs.
 - OPTIONAL workspace population tooling (for example Git CLI, if used).
 - Coding-agent executable that supports the targeted Codex app-server mode.
-- Host environment authentication for the issue tracker and coding agent.
+- Host environment authentication for the issue tracker and coding agent. Host-side tracker secret
+  environment variables SHOULD NOT be inherited by the coding-agent child process.
 
 ## 4. Core Domain Model
 
@@ -149,30 +155,44 @@ Symphony is easiest to port when kept in these layers:
 
 #### 4.1.1 Issue
 
-Normalized issue record used by orchestration, prompt rendering, and observability output.
+Normalized schedulable work item used by orchestration, prompt rendering, and observability output.
+The name `Issue` is generic in this specification; an adapter MAY map it from a ticket, card,
+project item, or another provider-native work object.
 
 Fields:
 
 - `id` (string)
-  - Stable tracker-internal ID.
+  - REQUIRED stable dispatch identity within the configured tracker scope.
+  - Opaque to the orchestrator. It MAY be a project-item or board-entry ID instead of the
+    provider's underlying ticket ID.
+- `native_ref` (object or null)
+  - OPTIONAL non-secret provider identifiers needed by provider-native tools.
+  - Opaque to the orchestrator and preserved for prompt/tool context.
 - `identifier` (string)
-  - Human-readable ticket key (example: `ABC-123`).
+  - REQUIRED human-readable ticket key (example: `ABC-123`).
+  - MUST be unique within the configured tracker scope because it names workspaces and
+    operator-facing routes. An adapter spanning multiple namespaces MUST disambiguate it.
 - `title` (string)
 - `description` (string or null)
 - `priority` (integer or null)
   - Lower numbers are higher priority in dispatch sorting.
 - `state` (string)
-  - Current tracker state name.
+  - REQUIRED current provider-native state name.
 - `branch_name` (string or null)
   - Tracker-provided branch metadata if available.
 - `url` (string or null)
+- `assignee_id` (string or null)
 - `labels` (list of strings)
   - Normalized to lowercase.
 - `blocked_by` (list of blocker refs)
-  - Each blocker ref contains:
+  - Best-effort provider metadata. Each blocker ref contains:
     - `id` (string or null)
     - `identifier` (string or null)
     - `state` (string or null)
+- `dispatchable` (boolean)
+  - REQUIRED adapter-derived eligibility for provider-specific rules that the generic scheduler
+    cannot infer safely, such as assignment, board membership, or blocker semantics.
+  - The orchestrator still applies configured state, label, claim, retry, and concurrency rules.
 - `created_at` (timestamp or null)
 - `updated_at` (timestamp or null)
 
@@ -275,14 +295,22 @@ Fields:
 ### 4.2 Stable Identifiers and Normalization Rules
 
 - `Issue ID`
-  - Use for tracker lookups and internal map keys.
+  - Use for tracker refresh calls and internal map keys.
+  - Treat it as an opaque dispatch identity; do not assume it is the provider's underlying ticket
+    ID.
+- `Native Ref`
+  - Preserve as opaque non-secret data for provider-native agent tools and prompt rendering.
+  - Never use it as an orchestrator map key or interpret provider-specific fields in core logic.
 - `Issue Identifier`
   - Use for human-readable logs and workspace naming.
+  - Require uniqueness within the configured tracker scope.
 - `Workspace Key`
   - Derive from `issue.identifier` by replacing any character not in `[A-Za-z0-9._-]` with `_`.
-  - Use the sanitized value for the workspace directory name.
+  - If sanitization changes the identifier, append a short stable hash of `issue.id` so two
+    distinct identifiers cannot collide after replacement.
+  - Use the resulting value for the workspace directory name.
 - `Normalized Issue State`
-  - Compare states after `lowercase`.
+  - Compare states after trimming surrounding whitespace and applying `lowercase`.
 - `Session ID`
   - Compose from coding-agent `thread_id` and `turn_id` as `<thread_id>-<turn_id>`.
 
@@ -349,24 +377,26 @@ Fields:
 
 - `kind` (string)
   - REQUIRED for dispatch.
-  - Current supported value: `linear`
-- `endpoint` (string)
-  - Default for `tracker.kind == "linear"`: `https://api.linear.app/graphql`
-- `api_key` (string)
-  - MAY be a literal token or `$VAR_NAME`.
-  - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
-  - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
-- `project_slug` (string)
-  - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - Selects one implementation-supported tracker adapter.
+- `provider` (object)
+  - Default: `{}`.
+  - Adapter-owned configuration such as endpoint, scope/project selector, and credentials.
+  - Core Symphony MUST preserve unknown keys and MUST NOT prescribe one cross-provider credential
+    or scope schema.
+  - Each adapter MUST document its required keys, defaults, secret keys, `$VAR_NAME` support, and
+    validation errors.
+  - If a documented secret `$VAR_NAME` resolves to an empty string, treat that secret as missing.
 - `required_labels` (list of strings)
   - Default: `[]`.
   - An issue MUST contain every configured label to dispatch or continue.
   - Matching ignores case and surrounding whitespace.
   - A blank configured label matches no issue.
 - `active_states` (list of strings)
-  - Default: `Todo`, `In Progress`
+  - REQUIRED unless the selected adapter profile documents a default.
+  - Values are provider-native state names compared case-insensitively by the scheduler.
 - `terminal_states` (list of strings)
-  - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
+  - REQUIRED unless the selected adapter profile documents a default.
+  - Values are provider-native state names compared case-insensitively by the scheduler.
 
 #### 5.3.2 `polling` (object)
 
@@ -426,7 +456,7 @@ Fields:
   - Changes SHOULD be re-applied at runtime and affect future retry scheduling.
 - `max_concurrent_agents_by_state` (map `state_name -> positive integer`)
   - Default: empty map.
-  - State keys are normalized (`lowercase`) for lookup.
+  - State keys are normalized (`trim + lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
 #### 5.3.6 `codex` (object)
@@ -480,7 +510,7 @@ Template input variables:
 Fallback prompt behavior:
 
 - If the workflow prompt body is empty, the runtime MAY use a minimal default prompt
-  (`You are working on an issue from Linear.`).
+  (`You are working on an issue from the configured tracker.`).
 - Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
   back to a prompt.
 
@@ -565,8 +595,8 @@ Validation checks:
 
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
-- `tracker.api_key` is present after `$` resolution.
-- `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
+- The selected adapter accepts `tracker.provider` after documented defaults and `$VAR`
+  resolution.
 - `codex.command` is present and non-empty.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
@@ -575,13 +605,11 @@ This section is intentionally redundant so a coding agent can implement the conf
 Extension fields are documented in the extension section that defines them. Core conformance does
 not require recognizing or validating extension fields unless that extension is implemented.
 
-- `tracker.kind`: string, REQUIRED, currently `linear`
-- `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.kind`: string, REQUIRED, selects one supported adapter
+- `tracker.provider`: object, default `{}`, adapter-owned endpoint/scope/auth settings
 - `tracker.required_labels`: list of strings, default `[]`
-- `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
-- `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
+- `tracker.active_states`: list of provider-native state names, adapter-defined default
+- `tracker.terminal_states`: list of provider-native state names, adapter-defined default
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `hooks.after_create`: shell script or null
@@ -726,19 +754,17 @@ An issue is dispatch-eligible only if all are true:
 
 - It has `id`, `identifier`, `title`, and `state`.
 - Its state is in `active_states` and not in `terminal_states`.
-- It is routed to this worker by the configured assignee and contains every
-  label in `tracker.required_labels`.
+- Its adapter-provided `dispatchable` value is `true`.
+- It contains every label in `tracker.required_labels`.
 - It is not already in `running`.
 - It is not already in `claimed`.
 - Global concurrency slots are available.
 - Per-state concurrency slots are available.
-- Blocker rule for `Todo` state passes:
-  - If the issue state is `Todo`, do not dispatch when any blocker is non-terminal.
 
 Sorting order (stable intent):
 
-1. `priority` ascending (1..4 are preferred; null/unknown sorts last)
-2. `created_at` oldest first
+1. `priority` ascending for values `1..4`; all other integers and null sort after that bucket
+2. `created_at` oldest first; null sorts last
 3. `identifier` lexicographic tie-breaker
 
 ### 8.3 Concurrency Control
@@ -1052,47 +1078,47 @@ Unsupported dynamic tool calls:
   using the targeted protocol and continue the session.
 - This prevents the session from stalling on unsupported tool execution paths.
 
-Optional client-side tool extension:
+Optional provider-native agent tool extension:
 
-- An implementation MAY expose a limited set of client-side tools to the app-server session.
-- Current standardized optional tool: `linear_graphql`.
-- If implemented, supported tools SHOULD be advertised to the app-server session during startup
-  using the protocol mechanism supported by the targeted Codex app-server version.
-- Unsupported tool names SHOULD still return a failure result using the targeted protocol and
+- An adapter MAY expose provider-native tools to the app-server session.
+- The selected adapter's tool specs SHOULD be advertised during session startup using the protocol
+  mechanism supported by the targeted Codex app-server version.
+- Tool specs, adapter selection, and effective tracker settings MUST be bound to one session
+  snapshot. A workflow reload applies to future sessions; it MUST NOT make an in-flight session
+  advertise one provider and execute another.
+- Tool names, schemas, and result payloads are adapter-owned. Symphony does not standardize a
+  lowest-common-denominator CRUD API.
+- The runtime MUST execute advertised tool calls host-side with the active adapter configuration and
+  MUST NOT require the coding-agent child process to read raw tracker tokens from disk or
+  environment.
+- The runtime SHOULD pass the current normalized issue to the adapter as internal execution context.
+  The adapter MAY use `issue.id` and `issue.native_ref` to preserve provider-specific richness
+  without teaching the orchestrator provider semantics.
+- Tracker credentials SHOULD NOT be inherited by the coding-agent child process. An adapter that
+  resolves credentials from environment variables MUST declare which secret environment names the
+  launcher removes from local and remote child environments. Literal credentials in a repo-owned
+  `WORKFLOW.md` remain readable to a child with workspace access and SHOULD NOT be used when this
+  isolation matters.
+- Unsupported tool names MUST return a structured failure result using the targeted protocol and
   continue the session.
+- Each adapter that ships tools MUST document:
+  - tool names and input schemas;
+  - whether a tool can mutate tracker state;
+  - scope/authorization behavior;
+  - result and error semantics;
+  - any provider-side idempotency or rate-limit expectations.
 
-`linear_graphql` extension contract:
+Minimal language-neutral adapter hooks for this OPTIONAL extension:
 
-- Purpose: execute a raw GraphQL query or mutation against Linear using Symphony's configured
-  tracker auth for the current session.
-- Availability: only meaningful when `tracker.kind == "linear"` and valid Linear auth is configured.
-- Preferred input shape:
+```text
+agent_tool_specs() -> list<ToolSpec>
+secret_environment_names() -> list<string>
+execute_agent_tool(name, arguments, context={issue}) -> ToolResult
+```
 
-  ```json
-  {
-    "query": "single GraphQL query or mutation document",
-    "variables": {
-      "optional": "graphql variables object"
-    }
-  }
-  ```
-
-- `query` MUST be a non-empty string.
-- `query` MUST contain exactly one GraphQL operation.
-- `variables` is OPTIONAL and, when present, MUST be a JSON object.
-- Implementations MAY additionally accept a raw GraphQL query string as shorthand input.
-- Execute one GraphQL operation per tool call.
-- If the provided document contains multiple operations, reject the tool call as invalid input.
-- `operationName` selection is intentionally out of scope for this extension.
-- Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config; do
-  not require the coding agent to read raw tokens from disk.
-- Tool result semantics:
-  - transport success + no top-level GraphQL `errors` -> `success=true`
-  - top-level GraphQL `errors` present -> `success=false`, but preserve the GraphQL response body
-    for debugging
-  - invalid input, missing auth, or transport failure -> `success=false` with an error payload
-- Return the GraphQL response or error payload as structured tool output that the model can inspect
-  in-session.
+`ToolResult` MUST distinguish success from failure and carry JSON-safe structured output that can
+be translated to the targeted app-server protocol. The context contains the normalized issue, never
+the credential.
 
 User-input-required policy:
 
@@ -1138,71 +1164,109 @@ Note:
 
 - Workspaces are intentionally preserved after successful runs.
 
-## 11. Issue Tracker Integration Contract (Linear-Compatible)
+## 11. Issue Tracker Integration Contract
 
-### 11.1 REQUIRED Operations
+The issue tracker boundary is deliberately small: a portable read kernel for scheduling plus
+OPTIONAL provider-native agent tools. Do not add generic comment/state/attachment CRUD merely to
+make providers look alike; those operations lose useful provider semantics and are not needed by
+the orchestrator.
 
-An implementation MUST support these tracker adapter operations:
+### 11.1 REQUIRED Adapter Operations
 
-1. `fetch_candidate_issues()`
-   - Return issues in configured active states for a configured project.
+An implementation MUST support these adapter operations:
 
-2. `fetch_issues_by_states(state_names)`
-   - Used for startup terminal cleanup.
+1. `fetch_issues_by_states(state_names)`
+   - Return normalized issues visible in the configured tracker scope and requested state names.
+   - The adapter MUST apply provider-side scope selection and pagination.
+   - Used with configured active states for candidate polling and terminal states for startup
+     cleanup.
+   - When used for candidate polling, include active scoped issues even when
+     `dispatchable=false`; the scheduler owns that final filter.
+   - The orchestrator applies `required_labels`, `dispatchable`, claims, retries, and concurrency
+     after normalization.
+   - An empty `state_names` list MUST return an empty result without a provider request.
 
-3. `fetch_issue_states_by_ids(issue_ids)`
-   - Used for active-run reconciliation.
+2. `fetch_issues_by_ids(issue_ids)`
+   - Return current normalized issue snapshots for the supplied opaque dispatch IDs.
+   - Used for active-run reconciliation and stale-dispatch revalidation.
+   - An empty `issue_ids` list MUST return an empty result without a provider request.
+   - IDs no longer visible in the configured scope are omitted; the orchestrator treats omission as
+     "no longer visible" rather than inventing a synthetic state.
 
-### 11.2 Query Semantics (Linear)
+Both operations return either `ok(list<Issue>)` or a typed adapter error. They are atomic from
+the scheduler's perspective after a paging or transport failure. A state-list call MAY omit and log
+an individually malformed provider record because it was never safe to dispatch. An ID-refresh call
+MUST fail instead of silently omitting a malformed requested record, because omission is meaningful.
+A successful `fetch_issues_by_ids` result is complete for that call. Output order is not
+significant, input IDs are treated as a set, and each dispatch ID appears at most once.
 
-Linear-specific requirements for `tracker.kind == "linear"`:
+The refresh operation returns full normalized snapshots, not only state strings, because label,
+assignment, routing, and provider-specific dispatchability can change while a run is active.
 
-- `tracker.kind == "linear"`
-- GraphQL endpoint (default `https://api.linear.app/graphql`)
-- Auth token sent in `Authorization` header
-- `tracker.project_slug` maps to Linear project `slugId`
-- Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
-- Candidate and issue-state refresh queries include issue labels. Required
-  label filtering happens after normalization so refresh can observe label
-  removal and stop or release existing work.
-- Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
-- Pagination REQUIRED for candidate issues
-- Page size default: `50`
-- Network timeout: `30000 ms`
+### 11.2 Adapter Responsibilities
 
-Important:
+Each adapter owns:
 
-- Linear GraphQL schema details can drift. Keep query construction isolated and test the exact query
-  fields/types REQUIRED by this specification.
+- construction from the current effective tracker configuration, including active/terminal states;
+- endpoint, authentication, transport, timeouts, pagination, and rate-limit handling;
+- provider-specific scope selection (project, board, team, repository, query, or equivalent);
+- mapping provider payloads into the normalized Issue fields in Section 4.1.1;
+- choosing a stable dispatch identity and preserving any distinct underlying IDs in `native_ref`;
+- deriving `dispatchable` from provider-specific routing rules;
+- preserving provider-native state names while allowing case-insensitive scheduler comparison;
+- OPTIONAL provider-native agent tools and their authorization boundary.
 
-A non-Linear implementation MAY change transport details, but the normalized outputs MUST match the
-domain model in Section 4.
+The orchestrator MUST NOT inspect provider payloads, assume that `issue.id` is an underlying
+ticket ID, or branch on provider-specific blocker, board, transition, or comment semantics.
+
+Each adapter MUST document a compact profile containing:
+
+- supported `tracker.kind` value;
+- `tracker.provider` keys, defaults, secret keys, and validation errors;
+- scope selection and pagination behavior;
+- `id` and `native_ref` mapping;
+- state, label, priority, timestamp, and `dispatchable` normalization;
+- provider-native tool names/schemas if any;
+- typed transport/auth/rate-limit error categories.
 
 ### 11.3 Normalization Rules
 
-Candidate issue normalization SHOULD produce fields listed in Section 4.1.1.
+Adapter output MUST satisfy Section 4.1.1. In addition:
 
-Additional normalization details:
-
-- Label names are trimmed and lowercased.
-
-- `labels` -> lowercase strings
-- `blocked_by` -> derived from inverse relations where relation type is `blocks`
-- `priority` -> integer only (non-integers become null)
-- `created_at` and `updated_at` -> parse ISO-8601 timestamps
+- Every listed field MUST be present in the normalized record. Nullable fields use `null`;
+  collection fields use an empty list when absent.
+- `id`, `identifier`, `title`, and `state` MUST be non-empty strings.
+- `labels` MUST be trimmed, lowercased strings; blank labels MUST be dropped and duplicate labels
+  SHOULD be removed.
+- `priority` MUST be an integer or null.
+- The scheduler ranks priorities `1..4` before null/unknown values; other integers sort with
+  null/unknown unless an implementation documents a different mapping.
+- `created_at` and `updated_at` MUST represent parsed RFC 3339 instants or null; the in-memory
+  timestamp type is implementation-defined.
+- Preserve provider spelling in `state`, but trim and lowercase only for scheduler comparisons.
+- `blocked_by` is best-effort metadata; adapters MUST NOT invent blocker semantics they cannot
+  represent reliably.
+- `dispatchable` MUST be explicit. It is `true` only when provider-specific eligibility checks
+  pass; the generic scheduler never tries to reconstruct those checks from `native_ref`.
+- `native_ref` MUST be null or a JSON-safe object containing only non-secret values safe to expose
+  in prompt/tool context; preserve it verbatim.
 
 ### 11.4 Error Handling Contract
 
-RECOMMENDED error categories:
+RECOMMENDED adapter error categories:
 
 - `unsupported_tracker_kind`
-- `missing_tracker_api_key`
-- `missing_tracker_project_slug`
-- `linear_api_request` (transport failures)
-- `linear_api_status` (non-200 HTTP)
-- `linear_graphql_errors`
-- `linear_unknown_payload`
-- `linear_missing_end_cursor` (pagination integrity error)
+- `invalid_tracker_config`
+- `missing_tracker_secret`
+- `tracker_request` (transport failure)
+- `tracker_status` (non-success response)
+- `tracker_response` (malformed or semantically invalid payload)
+- `tracker_pagination` (pagination integrity failure)
+- `tracker_rate_limited`
+
+Every typed adapter error SHOULD include at least `category` and human-readable `message`.
+Adapters MAY add `retryable`, `retry_after_ms`, provider status, and provider-specific detail, but
+the orchestrator only relies on success vs. failure.
 
 Orchestrator behavior on tracker errors:
 
@@ -1210,17 +1274,19 @@ Orchestrator behavior on tracker errors:
 - Running-state refresh failure: log and keep active workers running.
 - Startup terminal cleanup failure: log warning and continue startup.
 
-### 11.5 Tracker Writes (Important Boundary)
+### 11.5 Tracker Writes and Agent Tools (Important Boundary)
 
 Symphony does not require first-class tracker write APIs in the orchestrator.
 
-- Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
-  agent using tools defined by the workflow prompt.
+- Ticket mutations (state transitions, comments, attachments, PR metadata) are typically handled by
+  the coding agent through the selected adapter's provider-native tools.
+- Tools execute in Symphony with the configured adapter credential; the child receives tool results,
+  not a raw token.
+- The current normalized issue is available to tool execution as context, including opaque
+  `native_ref`, so adapters can retain provider richness without adding it to the core scheduler.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
-- If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
-  toolchain rather than orchestrator business logic.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -1241,12 +1307,14 @@ Inputs to prompt rendering:
 
 ### 12.3 Retry/Continuation Semantics
 
-`attempt` SHOULD be passed to the template because the workflow prompt can provide different
-instructions for:
+`attempt` SHOULD be passed to the template as a 1-based retry/continuation count:
 
-- first run (`attempt` null or absent)
-- continuation run after a successful prior session
-- retry after error/timeout/stall
+- first run: `attempt` is null or absent;
+- any later run: `attempt` is an integer.
+
+The core `attempt` value does not distinguish a normal continuation from an error/timeout/stall
+retry. An implementation MAY expose an additional `retry_kind` template field if workflows need
+that distinction, but it is not part of core conformance.
 
 ### 12.4 Failure Semantics
 
@@ -1537,7 +1605,7 @@ API design notes:
 1. `Workflow/Config Failures`
    - Missing `WORKFLOW.md`
    - Invalid YAML front matter
-   - Unsupported tracker kind or missing tracker credentials/project slug
+   - Unsupported tracker kind or invalid adapter-owned tracker configuration
    - Missing coding-agent executable
 
 2. `Workspace Failures`
@@ -1649,6 +1717,12 @@ RECOMMENDED additional hardening for ports:
 - Support `$VAR` indirection in workflow config.
 - Do not log API tokens or secret env values.
 - Validate presence of secrets without printing them.
+- Execute provider-native tracker tools in the Symphony host process with the configured adapter
+  credential.
+- Do not pass tracker credentials through the coding-agent child environment. Adapters MUST declare
+  secret environment names so local and remote launchers can remove them from child environments.
+- Do not place literal tracker credentials in a repo-owned `WORKFLOW.md` when the child can read
+  that workspace; use host-side secret references instead.
 
 ### 15.4 Hook Script Safety
 
@@ -1679,10 +1753,10 @@ Possible hardening measures include:
   of running with a maximally permissive configuration.
 - Adding external isolation layers such as OS/container/VM sandboxing, network restrictions, or
   separate credentials beyond the built-in Codex policy controls.
-- Filtering which Linear issues, projects, teams, labels, or other tracker sources are eligible for
-  dispatch so untrusted or out-of-scope tasks do not automatically reach the agent.
-- Narrowing the `linear_graphql` tool so it can only read or mutate data inside the
-  intended project scope, rather than exposing general workspace-wide tracker access.
+- Filtering which issues, projects, boards, teams, labels, or other tracker sources are eligible
+  for dispatch so untrusted or out-of-scope tasks do not automatically reach the agent.
+- Narrowing provider-native tools so they can only read or mutate data inside the intended tracker
+  scope, rather than exposing general workspace-wide tracker access.
 - Reducing the set of client-side tools, credentials, filesystem paths, and network destinations
   available to the agent to the minimum needed for the workflow.
 
@@ -1734,7 +1808,7 @@ on_tick(state):
     schedule_tick(state.poll_interval_ms)
     return state
 
-  issues = tracker.fetch_candidate_issues()
+  issues = tracker.fetch_issues_by_states(active_states)
   if issues failed:
     log_tracker_error()
     notify_observers()
@@ -1763,7 +1837,7 @@ function reconcile_running_issues(state):
   if running_ids is empty:
     return state
 
-  refreshed = tracker.fetch_issue_states_by_ids(running_ids)
+  refreshed = tracker.fetch_issues_by_ids(running_ids)
   if refreshed failed:
     log_debug("keep workers running")
     return state
@@ -1775,6 +1849,10 @@ function reconcile_running_issues(state):
       state.running[issue.id].issue = issue
     else:
       state = terminate_running_issue(state, issue.id, cleanup_workspace=false)
+
+  returned_ids = set(issue.id for issue in refreshed)
+  for missing_id in running_ids - returned_ids:
+    state = terminate_running_issue(state, missing_id, cleanup_workspace=false)
 
   return state
 ```
@@ -1856,13 +1934,16 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
       run_hook_best_effort("after_run", workspace.path)
       fail_worker("agent turn error")
 
-    refreshed_issue = tracker.fetch_issue_states_by_ids([issue.id])
+    refreshed_issue = tracker.fetch_issues_by_ids([issue.id])
     if refreshed_issue failed:
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
       fail_worker("issue state refresh error")
 
-    issue = refreshed_issue[0] or issue
+    if refreshed_issue is empty:
+      break
+
+    issue = refreshed_issue[0]
 
     if issue.state is not active:
       break
@@ -1907,19 +1988,23 @@ on_retry_timer(issue_id, state):
   if missing:
     return state
 
-  candidates = tracker.fetch_candidate_issues()
+  refreshed = tracker.fetch_issues_by_ids([issue_id])
   if fetch failed:
     return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
       identifier: retry_entry.identifier,
-      error: "retry poll failed"
+      error: "retry refresh failed"
     })
 
-  issue = find_by_id(candidates, issue_id)
+  issue = find_by_id(refreshed, issue_id)
   if issue is null:
     state.claimed.remove(issue_id)
     return state
 
-  if available_slots(state) == 0:
+  if not retry_dispatch_allowed(issue, state, ignore_existing_claim=issue_id):
+    state.claimed.remove(issue_id)
+    return state
+
+  if no_available_slots(state):
     return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
       identifier: issue.identifier,
       error: "no available orchestrator slots"
@@ -1956,9 +2041,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Invalid YAML front matter returns typed error
 - Front matter non-map returns typed error
 - Config defaults apply when OPTIONAL values are missing
-- `tracker.kind` validation enforces currently supported kind (`linear`)
-- `tracker.api_key` works (including `$VAR` indirection)
-- `$VAR` resolution works for tracker API key and path values
+- `tracker.kind` validation enforces an implementation-supported adapter
+- `tracker.provider` preserves adapter-owned keys and validates them through the selected adapter
+- `$VAR` resolution works for documented adapter secret keys and path values
 - `~` path expansion works
 - `codex.command` is preserved as a shell command string
 - Per-state concurrency override map normalizes state names and ignores invalid values
@@ -1980,23 +2065,24 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Workspace path sanitization and root containment invariants are enforced before agent launch
 - Agent launch uses the per-issue workspace path as cwd and rejects out-of-root paths
 
-### 17.3 Issue Tracker Client
+### 17.3 Issue Tracker Adapter
 
-- Candidate issue fetch uses active states and project slug
-- Linear query uses the specified project filter field (`slugId`)
-- Empty `fetch_issues_by_states([])` returns empty without API call
+- Candidate issue fetch applies configured active states and adapter-owned scope selection
+- Empty `fetch_issues_by_states([])` returns empty without a provider call
+- Empty `fetch_issues_by_ids([])` returns empty without a provider call
 - Pagination preserves order across multiple pages
-- Blockers are normalized from inverse relations of type `blocks`
 - Labels are normalized to lowercase
-- Issue state refresh by ID returns minimal normalized issues
-- Issue state refresh query uses GraphQL ID typing (`[ID!]`) as specified in Section 11.2
-- Error mapping for request errors, non-200, GraphQL errors, malformed payloads
+- Refresh by opaque dispatch ID returns full normalized issue snapshots
+- A distinct provider ticket ID or project-item ID is preserved in `native_ref` when needed
+- Provider-specific routing/blocker/assignment rules become explicit `dispatchable`
+- Error mapping covers config, request, non-success response, malformed payload, pagination, and
+  rate limiting
 
 ### 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
 - Dispatch sort order is priority then oldest creation time
-- `Todo` issue with non-terminal blockers is not eligible
-- `Todo` issue with terminal blockers is eligible
+- `dispatchable=false` issues are not eligible
+- Required-label filtering is case-insensitive and applies after adapter normalization
 - Active-state issue refresh updates running entry state
 - Non-active state stops running agent without workspace cleanup
 - Terminal state stops running agent and cleans workspace
@@ -2033,10 +2119,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   targeted protocol
 - If client-side tools are implemented, session startup advertises the supported tool specs
   using the targeted app-server protocol
-- If the `linear_graphql` client-side tool extension is implemented:
-  - the tool is advertised to the session
-  - valid `query` / `variables` inputs execute against configured Linear auth
-  - top-level GraphQL `errors` produce `success=false` while preserving the GraphQL body
+- If provider-native agent tools are implemented:
+  - only the selected adapter's tools are advertised to the session
+  - valid inputs execute host-side with configured adapter auth
+  - the current normalized issue and `native_ref` are available as internal tool context
+  - tracker secrets are not inherited by the coding-agent child process
   - invalid arguments, missing auth, and transport failures return structured failure payloads
   - unsupported tool names still fail without stalling the session
 
@@ -2065,8 +2152,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 These checks are RECOMMENDED for production readiness and MAY be skipped in CI when credentials,
 network access, or external service permissions are unavailable.
 
-- A real tracker smoke test can be run with valid credentials supplied by `LINEAR_API_KEY` or a
-  documented local bootstrap mechanism (for example `~/.linear_api_key`).
+- A real tracker smoke test can be run with valid credentials supplied through the selected
+  adapter's documented secret mechanism.
 - Real integration tests SHOULD use isolated test identifiers/workspaces and clean up tracker
   artifacts when practical.
 - A skipped real-integration test SHOULD be reported as skipped, not silently treated as passed.
@@ -2088,11 +2175,11 @@ Use the same validation profiles as Section 17:
 - Typed config layer with defaults and `$` resolution
 - Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt
 - Polling orchestrator with single-authority mutable state
-- Issue tracker client with candidate fetch + state refresh + terminal fetch
+- Issue tracker adapter with state-list + ID-refresh reads
 - Workspace manager with sanitized per-issue workspaces
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
-- Coding-agent app-server subprocess client with JSON line protocol
+- Coding-agent app-server subprocess client with the targeted transport/framing protocol
 - Codex launch command config (`codex.command`, default `codex app-server`)
 - Strict prompt rendering with `issue` and `attempt` variables
 - Exponential retry queue with continuation retries after normal exit
@@ -2106,14 +2193,13 @@ Use the same validation profiles as Section 17:
 
 - HTTP server extension honors CLI `--port` over `server.port`, uses a safe default bind host, and
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
-- `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
-  app-server session using configured Symphony auth.
+- Provider-native agent tools, when shipped, execute through the app-server session using
+  host-side configured adapter auth without passing tracker secrets to the child.
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
-- TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
-  of only via agent tools.
-- TODO: Add pluggable issue tracker adapters beyond Linear.
+- TODO: Extract common semantic helper tools only after multiple adapters demonstrate real
+  duplication; do not preemptively replace provider-native tools with generic CRUD.
 
 ### 18.3 Operational Validation Before Production (RECOMMENDED)
 

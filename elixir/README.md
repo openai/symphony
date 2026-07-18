@@ -13,15 +13,17 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls Linear for candidate work
+1. Polls the configured tracker for candidate work (the included production adapter is Linear)
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During app-server sessions, the selected tracker adapter may advertise provider-native tools. The
+included Linear adapter serves `linear_graphql` so repo skills can make raw Linear GraphQL calls.
+Symphony executes that tool with its configured auth and removes `LINEAR_API_KEY` from the Codex
+child environment, so the agent does not need a second tracker login.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -29,7 +31,7 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
 entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
-Linear issue can become a dispatch candidate again after restart.
+tracker issue can become a dispatch candidate again after restart.
 
 ## How to use it
 
@@ -74,7 +76,7 @@ mise exec -- ./bin/symphony ./WORKFLOW.md
 
 Symphony ships self-contained executables built with
 [Burrito](https://github.com/burrito-elixir/burrito). They embed Erlang/OTP, Elixir, and Symphony,
-but still expect `codex`, `git`, and Linear credentials on the target machine.
+but still expect `codex`, `git`, and the selected tracker credentials on the target machine.
 
 Supported release targets:
 
@@ -117,7 +119,8 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  provider:
+    project_slug: "..."
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -130,7 +133,7 @@ codex:
   command: codex app-server
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on an issue from the configured tracker {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
@@ -138,6 +141,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- `tracker.kind` selects an adapter. Adapter-owned endpoint, scope, and auth settings belong under
+  `tracker.provider`; the current Linear adapter still accepts the older flat `endpoint`,
+  `api_key`, `project_slug`, and `assignee` aliases for compatibility.
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
@@ -161,7 +167,11 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- For the Linear adapter, `tracker.provider.api_key` reads from `LINEAR_API_KEY` when unset or
+  when value is `$LINEAR_API_KEY`. The legacy flat `tracker.api_key` alias behaves the same way.
+- Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if Codex can read that
+  workspace. Use `$VAR`/host-side secret references so Symphony can keep the token out of the
+  child environment.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -169,7 +179,8 @@ Notes:
 
 ```yaml
 tracker:
-  api_key: $LINEAR_API_KEY
+  provider:
+    api_key: $LINEAR_API_KEY
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:

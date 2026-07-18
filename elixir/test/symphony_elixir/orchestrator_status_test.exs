@@ -1006,7 +1006,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         id: issue_id,
         identifier: "MT-MCP",
         state: "In Progress",
-        url: "https://example.org/issues/MT-MCP"
+        url: "https://example.org/issues/MT-MCP",
+        dispatchable: true
       },
       worker_host: "dm-dev2",
       workspace_path: "/workspaces/MT-MCP",
@@ -1078,7 +1079,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       pid: self(),
       ref: ref,
       identifier: "MT-INPUT",
-      issue: %Issue{id: issue_id, identifier: "MT-INPUT", state: "In Progress"},
+      issue: %Issue{id: issue_id, identifier: "MT-INPUT", state: "In Progress", dispatchable: true},
       session_id: "thread-input-turn-input",
       last_codex_message: %{
         event: :turn_input_required,
@@ -1132,7 +1133,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       pid: self(),
       ref: ref,
       identifier: "MT-INPUT-NORMAL",
-      issue: %Issue{id: issue_id, identifier: "MT-INPUT-NORMAL", state: "In Progress"},
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-INPUT-NORMAL",
+        state: "In Progress",
+        dispatchable: true
+      },
       session_id: "thread-input-normal",
       completion: %{outcome: :input_required},
       last_codex_message: nil,

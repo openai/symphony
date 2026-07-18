@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Workspace do
     issue_context = issue_context(issue_or_identifier)
 
     try do
-      safe_id = safe_identifier(issue_context.issue_identifier)
+      safe_id = workspace_key(issue_context)
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
@@ -131,6 +131,35 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier), do: remove_issue_workspaces(identifier, nil)
 
   @spec remove_issue_workspaces(term(), worker_host()) :: :ok
+  def remove_issue_workspaces(%{id: _issue_id, identifier: _identifier} = issue, worker_host)
+      when is_binary(worker_host) do
+    safe_id = issue |> issue_context() |> workspace_key()
+
+    case workspace_path_for_issue(safe_id, worker_host) do
+      {:ok, workspace} -> remove(workspace, worker_host)
+      {:error, _reason} -> :ok
+    end
+
+    :ok
+  end
+
+  def remove_issue_workspaces(%{id: _issue_id, identifier: _identifier} = issue, nil) do
+    safe_id = issue |> issue_context() |> workspace_key()
+
+    case Config.settings!().worker.ssh_hosts do
+      [] ->
+        case workspace_path_for_issue(safe_id, nil) do
+          {:ok, workspace} -> remove(workspace, nil)
+          {:error, _reason} -> :ok
+        end
+
+      worker_hosts ->
+        Enum.each(worker_hosts, &remove_issue_workspaces(issue, &1))
+    end
+
+    :ok
+  end
+
   def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
     safe_id = safe_identifier(identifier)
 
@@ -205,6 +234,22 @@ defmodule SymphonyElixir.Workspace do
 
   defp safe_identifier(identifier) do
     String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  end
+
+  defp workspace_key(%{issue_id: issue_id, issue_identifier: identifier}) do
+    safe_identifier = safe_identifier(identifier)
+
+    if safe_identifier == identifier or not is_binary(issue_id) do
+      safe_identifier
+    else
+      "#{safe_identifier}--#{short_issue_hash(issue_id)}"
+    end
+  end
+
+  defp short_issue_hash(issue_id) do
+    :crypto.hash(:sha256, issue_id)
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 8)
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do

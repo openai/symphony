@@ -56,6 +56,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Path.basename(first_workspace) == "MT_Det"
   end
 
+  test "workspace keys disambiguate identifiers that sanitize to the same path" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-collision-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      slash_issue = %Issue{id: "dispatch-slash", identifier: "team/a-1"}
+      underscore_issue = %Issue{id: "dispatch-underscore", identifier: "team_a-1"}
+
+      assert {:ok, slash_workspace} = Workspace.create_for_issue(slash_issue)
+      assert {:ok, underscore_workspace} = Workspace.create_for_issue(underscore_issue)
+
+      refute slash_workspace == underscore_workspace
+      assert Path.basename(underscore_workspace) == "team_a-1"
+      assert String.starts_with?(Path.basename(slash_workspace), "team_a-1--")
+
+      assert :ok = Workspace.remove_issue_workspaces(slash_issue)
+      refute File.exists?(slash_workspace)
+      assert File.exists?(underscore_workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace reuses existing issue directory without deleting local changes" do
     workspace_root =
       Path.join(
@@ -295,20 +323,20 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert :ok = Workspace.remove_issue_workspaces(nil)
   end
 
-  test "linear issue helpers" do
+  test "tracker issue helpers" do
     issue = %Issue{
       id: "abc",
       labels: ["frontend", "infra"],
-      assigned_to_worker: false
+      dispatchable: false
     }
 
     assert Issue.label_names(issue) == ["frontend", "infra"]
     assert issue.labels == ["frontend", "infra"]
-    refute issue.assigned_to_worker
+    refute issue.dispatchable
   end
 
-  test "linear issue routing requires every configured label" do
-    issue = %Issue{labels: [" Symphony ", "JavaScript"], assigned_to_worker: true}
+  test "tracker issue routing requires every configured label" do
+    issue = %Issue{labels: [" Symphony ", "JavaScript"], dispatchable: true}
 
     assert Issue.routable?(issue, [])
     assert Issue.routable?(issue, ["symphony"])
@@ -316,7 +344,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute Issue.routable?(issue, ["symph"])
     refute Issue.routable?(issue, [" "])
     refute Issue.routable?(issue, ["symphony", "security"])
-    refute Issue.routable?(%{issue | assigned_to_worker: false}, ["symphony"])
+    refute Issue.routable?(%{issue | dispatchable: false}, ["symphony"])
   end
 
   test "linear client normalizes blockers from inverse relations" do
@@ -332,7 +360,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "assignee" => %{
         "id" => "user-1"
       },
-      "labels" => %{"nodes" => [%{"name" => "Backend"}]},
+      "labels" => %{"nodes" => [%{"name" => "Backend"}, %{"name" => " backend "}, %{"name" => " "}]},
       "inverseRelations" => %{
         "nodes" => [
           %{
@@ -361,10 +389,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert issue.blocked_by == [%{id: "issue-2", identifier: "MT-2", state: "In Progress"}]
     assert issue.labels == ["backend"]
+    assert issue.native_ref == nil
     assert issue.priority == 2
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
-    assert issue.assigned_to_worker
+    refute issue.dispatchable
+  end
+
+  test "linear client rejects malformed issues instead of returning invalid scheduler records" do
+    assert Client.normalize_issue_for_test(
+             %{
+               "id" => "issue-empty-title",
+               "identifier" => "MT-EMPTY",
+               "title" => " ",
+               "state" => %{"name" => "Todo"}
+             },
+             nil
+           ) == nil
+
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [
+               %{
+                 "id" => "issue-empty-title",
+                 "identifier" => "MT-EMPTY",
+                 "title" => " ",
+                 "state" => %{"name" => "Todo"}
+               }
+             ]
+           }
+         }
+       }}
+    end
+
+    assert {:error, :linear_unknown_payload} =
+             Client.fetch_issues_by_ids_for_test(["issue-empty-title"], graphql_fun)
   end
 
   test "linear client marks explicitly unassigned issues as not routed to worker" do
@@ -380,7 +442,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
-    refute issue.assigned_to_worker
+    refute issue.dispatchable
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -431,14 +493,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       {:ok, body}
     end
 
-    assert {:ok, issues} = Client.fetch_issue_states_by_ids_for_test(issue_ids, graphql_fun)
+    assert {:ok, issues} = Client.fetch_issues_by_ids_for_test(issue_ids, graphql_fun)
 
     assert Enum.map(issues, & &1.id) == issue_ids
 
-    assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
-    assert query =~ "SymphonyLinearIssuesById"
+    assert_receive {:fetch_issue_states_page, query,
+                    %{
+                      ids: ^first_batch_ids,
+                      projectSlug: "test-project",
+                      first: 50,
+                      relationFirst: 50
+                    }}
 
-    assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
+    assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ "projectSlug"
+    assert query =~ "slugId"
+
+    assert_receive {:fetch_issue_states_page, ^query,
+                    %{
+                      ids: ^second_batch_ids,
+                      projectSlug: "test-project",
+                      first: 5,
+                      relationFirst: 50
+                    }}
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do
@@ -468,6 +545,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert log =~ "Linear GraphQL request failed status=400"
     assert log =~ ~s(body=%{"errors" => [%{"extensions" => %{"code" => "BAD_USER_INPUT"})
     assert log =~ "Variable \\\"$ids\\\" got invalid value"
+  end
+
+  test "linear graphql honors a bound tracker-settings snapshot" do
+    parent = self()
+
+    assert {:ok, %{"data" => %{"viewer" => %{"id" => "viewer-bound"}}}} =
+             Client.graphql(
+               "query Viewer { viewer { id } }",
+               %{},
+               tracker_settings: %{
+                 api_key: "bound-token",
+                 endpoint: "https://bound.example.test/graphql"
+               },
+               request_fun: fn payload, headers ->
+                 send(parent, {:bound_graphql_request, payload, headers})
+                 {:ok, %{status: 200, body: %{"data" => %{"viewer" => %{"id" => "viewer-bound"}}}}}
+               end
+             )
+
+    assert_receive {:bound_graphql_request, %{"query" => "query Viewer { viewer { id } }"}, [{"Authorization", "bound-token"}, {"Content-Type", "application/json"}]}
   end
 
   test "orchestrator sorts dispatch by priority then oldest created_at" do
@@ -508,7 +605,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(sorted, & &1.identifier) == ["MT-200", "MT-201", "MT-199"]
   end
 
-  test "todo issue with non-terminal blocker is not dispatch-eligible" do
+  test "provider-marked blocked issue is not dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
       running: %{},
@@ -522,6 +619,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       identifier: "MT-1001",
       title: "Blocked work",
       state: "Todo",
+      dispatchable: false,
       blocked_by: [%{id: "blocker-1", identifier: "MT-1002", state: "In Progress"}]
     }
 
@@ -544,7 +642,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       identifier: "MT-1007",
       title: "Owned elsewhere",
       state: "Todo",
-      assigned_to_worker: false
+      dispatchable: false
     }
 
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
@@ -568,14 +666,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       identifier: "MT-1008",
       title: "Not opted in",
       state: "Todo",
-      labels: ["symphony"]
+      labels: ["symphony"],
+      dispatchable: true
     }
 
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
     assert Orchestrator.should_dispatch_issue_for_test(%{issue | labels: ["Symphony", "JavaScript"]}, state)
   end
 
-  test "todo issue with terminal blockers remains dispatch-eligible" do
+  test "provider-marked ready issue remains dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
       running: %{},
@@ -589,13 +688,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       identifier: "MT-1003",
       title: "Ready work",
       state: "Todo",
-      blocked_by: [%{id: "blocker-2", identifier: "MT-1004", state: "Closed"}]
+      blocked_by: [%{id: "blocker-2", identifier: "MT-1004", state: "Closed"}],
+      dispatchable: true
     }
 
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
-  test "dispatch revalidation skips stale todo issue once a non-terminal blocker appears" do
+  test "dispatch revalidation skips an issue when provider routing changes" do
     stale_issue = %Issue{
       id: "blocked-2",
       identifier: "MT-1005",
@@ -609,6 +709,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       identifier: "MT-1005",
       title: "Stale blocked work",
       state: "Todo",
+      dispatchable: false,
       blocked_by: [%{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}]
     }
 
@@ -979,8 +1080,47 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     config = Config.settings!()
     assert config.tracker.api_key == api_key
+    assert config.tracker.secret_environment_names == ["LINEAR_API_KEY", api_key_env_var]
     assert config.workspace.root == Path.expand(workspace_root)
     assert config.codex.command == "#{codex_bin} app-server"
+  end
+
+  test "schema preserves adapter-owned provider config while keeping linear aliases compatible" do
+    assert {:ok, settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{
+                   endpoint: "https://linear.example.test/graphql",
+                   api_key: "provider-token",
+                   project_slug: "provider-project",
+                   extra: %{team: "platform"}
+                 }
+               }
+             })
+
+    assert settings.tracker.endpoint == "https://linear.example.test/graphql"
+    assert settings.tracker.api_key == "provider-token"
+    assert settings.tracker.project_slug == "provider-project"
+    assert settings.tracker.secret_environment_names == ["LINEAR_API_KEY"]
+
+    assert settings.tracker.provider == %{
+             "endpoint" => "https://linear.example.test/graphql",
+             "api_key" => "provider-token",
+             "project_slug" => "provider-project",
+             "assignee" => nil,
+             "extra" => %{"team" => "platform"}
+           }
+  end
+
+  test "schema does not inject linear defaults before an adapter is selected" do
+    assert {:ok, settings} = Schema.parse(%{tracker: %{kind: "future-tracker"}})
+
+    assert settings.tracker.endpoint == nil
+    assert settings.tracker.api_key == nil
+    assert settings.tracker.active_states == nil
+    assert settings.tracker.terminal_states == nil
+    assert settings.tracker.provider == %{}
   end
 
   test "config no longer resolves legacy env: references" do
@@ -1056,7 +1196,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Schema.normalize_state_limits(nil) == %{}
 
-    assert Schema.normalize_state_limits(%{"In Progress" => 2, todo: 1}) == %{
+    assert Schema.normalize_state_limits(%{" In Progress " => 2, todo: 1}) == %{
              "todo" => 1,
              "in progress" => 2
            }
@@ -1069,6 +1209,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert changeset.errors == [
              limits: {"state names must not be blank", []},
              limits: {"limits must be positive integers", []}
+           ]
+
+    whitespace_state_changeset =
+      {%{}, %{limits: :map}}
+      |> Changeset.cast(%{limits: %{"   " => 1}}, [:limits])
+      |> Schema.validate_state_limits(:limits)
+
+    assert whitespace_state_changeset.errors == [
+             limits: {"state names must not be blank", []}
            ]
   end
 
@@ -1096,7 +1245,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, settings} =
              Schema.parse(%{
-               tracker: %{api_key: "$#{empty_secret_env}"},
+               tracker: %{kind: "linear", api_key: "$#{empty_secret_env}"},
                workspace: %{root: "$#{missing_workspace_env}"},
                codex: %{approval_policy: %{reject: %{sandbox_approval: true}}}
              })
@@ -1110,7 +1259,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, settings} =
              Schema.parse(%{
-               tracker: %{api_key: "$#{missing_secret_env}"},
+               tracker: %{kind: "linear", api_key: "$#{missing_secret_env}"},
                workspace: %{root: ""}
              })
 

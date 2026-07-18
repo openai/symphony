@@ -1341,6 +1341,93 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server does not pass tracker credentials to the local Codex child" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-secret-env-#{System.unique_integer([:positive])}"
+      )
+
+    custom_secret_env = "SYMP_CUSTOM_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
+    previous_secret = System.get_env("LINEAR_API_KEY")
+    previous_custom_secret = System.get_env(custom_secret_env)
+    previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_secret)
+      restore_env(custom_secret_env, previous_custom_secret)
+      restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+    end)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SECRET")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-secret-env.trace")
+
+      File.mkdir_p!(workspace)
+      System.put_env("LINEAR_API_KEY", "canonical-secret-that-must-not-reach-child")
+      System.put_env(custom_secret_env, "custom-secret-that-must-not-reach-child")
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="$SYMP_TEST_CODEx_TRACE"
+      printf 'CANONICAL_SECRET:%s\n' "$LINEAR_API_KEY" >> "$trace_file"
+      printf 'CUSTOM_SECRET:%s\n' "$#{custom_secret_env}" >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-secret"}}}'
+            ;;
+          3)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-secret"}}}'
+            ;;
+          4)
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_api_token: "$#{custom_secret_env}",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-secret-env",
+        identifier: "MT-SECRET",
+        title: "Keep tracker auth in Symphony",
+        description: "Ensure the child cannot bypass the centrally-authenticated tool boundary",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SECRET",
+        labels: ["security"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Do not inherit tracker auth", issue)
+      assert File.read!(trace_file) =~ "CANONICAL_SECRET:\n"
+      assert File.read!(trace_file) =~ "CUSTOM_SECRET:\n"
+      refute File.read!(trace_file) =~ "secret-that-must-not-reach-child"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(
@@ -1428,6 +1515,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "-T -p 2200 worker-01 bash -lc"
       assert argv_line =~ "cd "
       assert argv_line =~ remote_workspace
+      assert argv_line =~ "unset LINEAR_API_KEY"
       assert argv_line =~ "exec "
       assert argv_line =~ "fake-remote-codex app-server"
 
