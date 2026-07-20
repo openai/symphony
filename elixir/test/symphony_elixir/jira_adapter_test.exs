@@ -197,6 +197,16 @@ defmodule SymphonyElixir.Jira.AdapterTest do
 
     refute normalized.dispatchable
 
+    open =
+      issue
+      |> put_in(
+        ["fields", "status"],
+        %{"name" => "Open", "statusCategory" => %{"key" => "new"}}
+      )
+      |> JiraClient.normalize_issue_for_test(tracker_settings())
+
+    refute open.dispatchable
+
     terminal_only =
       issue
       |> put_in(["fields", "issuelinks"], [
@@ -225,7 +235,10 @@ defmodule SymphonyElixir.Jira.AdapterTest do
 
     in_progress =
       issue
-      |> put_in(["fields", "status", "name"], "In Progress")
+      |> put_in(
+        ["fields", "status"],
+        %{"name" => "In Progress", "statusCategory" => %{"key" => "indeterminate"}}
+      )
       |> JiraClient.normalize_issue_for_test(tracker_settings())
 
     assert in_progress.dispatchable

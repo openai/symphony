@@ -232,6 +232,7 @@ defmodule SymphonyElixir.Jira.Client do
        when is_binary(id) and is_binary(key) and is_map(fields) do
     title = fields["summary"]
     state = get_in(fields, ["status", "name"])
+    status_category = get_in(fields, ["status", "statusCategory", "key"])
     blockers = extract_blockers(fields["issuelinks"])
 
     if same_project_key?(issue_project_key(%{"fields" => fields}), settings.project_key) and
@@ -250,7 +251,7 @@ defmodule SymphonyElixir.Jira.Client do
         assignee_id: get_in(fields, ["assignee", "accountId"]),
         labels: extract_labels(fields["labels"]),
         blocked_by: blockers,
-        dispatchable: dispatchable?(state, blockers, settings.terminal_states),
+        dispatchable: dispatchable?(state, status_category, blockers, settings.terminal_states),
         created_at: parse_datetime(fields["created"]),
         updated_at: parse_datetime(fields["updated"])
       }
@@ -333,9 +334,18 @@ defmodule SymphonyElixir.Jira.Client do
     }
   end
 
-  defp dispatchable?(state, blockers, terminal_states) do
-    normalize_state(state) not in ["todo", "to do"] or
+  defp dispatchable?(state, status_category, blockers, terminal_states) do
+    not blocks_gate_dispatch?(state, status_category) or
       Enum.all?(blockers, &terminal_blocker?(&1, terminal_states))
+  end
+
+  defp blocks_gate_dispatch?(_state, status_category)
+       when is_binary(status_category) and status_category != "" do
+    normalize_state(status_category) == "new"
+  end
+
+  defp blocks_gate_dispatch?(state, _status_category) do
+    normalize_state(state) in ["todo", "to do"]
   end
 
   defp terminal_blocker?(%{state: state}, terminal_states)

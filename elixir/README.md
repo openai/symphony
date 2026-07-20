@@ -261,6 +261,8 @@ codex:
   and accept `$VAR`. Set explicit Jira-native `active_states` and `terminal_states`.
 - Issues and reads: candidate reads and ID refreshes stay scoped to the configured project and
   requested statuses; `issue.id` is Jira's immutable ID and `issue.identifier` is the issue key.
+- Blockers: inward `Blocks` links populate `blocked_by`; issues in Jira's `new` status category
+  wait until blockers reach configured terminal states, while in-progress categories keep running.
 - Tool: `jira_rest` sends relative `/rest/api/3/` requests host-side with configured Basic auth,
   strips token environment variables from Codex, and can reach whatever the Jira credential can.
 
