@@ -71,8 +71,11 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
+
+Every CLI start requires the explicit
+`--i-understand-that-this-will-be-running-without-the-usual-guardrails` acknowledgement.
 
 ## Burrito releases
 
@@ -94,7 +97,7 @@ After downloading the executable for your platform from a release:
 
 ```bash
 chmod +x ./symphony-v0.0.1-macos_arm64
-./symphony-v0.0.1-macos_arm64 ./WORKFLOW.md
+./symphony-v0.0.1-macos_arm64 --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
 
 ## Configuration
@@ -102,7 +105,7 @@ chmod +x ./symphony-v0.0.1-macos_arm64
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails /path/to/custom/WORKFLOW.md
 ```
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
