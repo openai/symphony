@@ -613,6 +613,73 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "terminal cleanup uses the workspace recorded for the running issue" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-terminal-recorded-workspace-#{System.unique_integer([:positive])}"
+      )
+
+    old_root = Path.join(test_root, "old-root")
+    new_root = Path.join(test_root, "new-root")
+    issue_id = "issue-recorded-workspace"
+    issue_identifier = "MT-557"
+    old_workspace = Path.join(old_root, issue_identifier)
+    new_workspace = Path.join(new_root, issue_identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: old_root,
+        tracker_active_states: ["Todo", "In Progress", "In Review"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+      )
+
+      File.mkdir_p!(old_workspace)
+      File.mkdir_p!(new_workspace)
+
+      agent_pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            workspace_path: old_workspace,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: new_root)
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "Closed",
+        title: "Done",
+        description: "Completed",
+        labels: []
+      }
+
+      _updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute File.exists?(old_workspace)
+      assert File.exists?(new_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "missing running issues stop active agents without cleaning the workspace" do
     test_root =
       Path.join(
