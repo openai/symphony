@@ -856,9 +856,13 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp tool_request_user_input_approval_answer(%{"id" => question_id, "options" => options})
        when is_binary(question_id) and is_list(options) do
-    case tool_request_user_input_approval_option_label(options) do
-      nil -> :error
-      answer_label -> {:ok, question_id, answer_label}
+    if String.starts_with?(question_id, "mcp_tool_call_approval_") do
+      case tool_request_user_input_approval_option_label(options) do
+        nil -> :error
+        answer_label -> {:ok, question_id, answer_label}
+      end
+    else
+      :error
     end
   end
 
