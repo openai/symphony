@@ -13,7 +13,8 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls the configured tracker for candidate work (included production adapters are Linear and Asana)
+1. Polls the configured tracker for candidate work (included adapters: Linear, GitHub Issues, Jira
+   Cloud, and Asana)
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
@@ -21,9 +22,10 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 5. Keeps Codex working on the issue until the work is done
 
 During app-server sessions, the selected tracker adapter may advertise provider-native tools. The
-Linear adapter serves `linear_graphql`; the Asana adapter serves `asana_api`. Symphony executes
-those tools with configured auth and removes each adapter's declared token environment variables
-from the Codex child, so the agent does not need a second tracker login.
+Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves
+`jira_rest`, and Asana serves `asana_api`. Symphony executes those tools with configured
+host-side auth and removes declared tracker-token environment variables from the Codex child, so
+the agent does not need a second tracker login.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -169,8 +171,6 @@ Notes:
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - For the Linear adapter, `tracker.provider.api_key` reads from `LINEAR_API_KEY` when unset or
   when value is `$LINEAR_API_KEY`. The legacy flat `tracker.api_key` alias behaves the same way.
-- For the Asana adapter, `tracker.provider.api_key` reads from `ASANA_PAT` when unset or when value
-  is `$ASANA_PAT`.
 - Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if Codex can read that
   workspace. Use `$VAR`/host-side secret references so Symphony can keep the token out of the
   child environment.
@@ -240,6 +240,30 @@ codex:
   `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
   human-readable provider detail.
 
+### GitHub Issues adapter
+
+- Config: use `tracker.kind: github` with required `tracker.provider.repo` in `owner/repo` form,
+  optional `token` (defaults to `GITHUB_TOKEN` and accepts `$VAR`), and optional `api_url`
+  (default `https://api.github.com`, HTTPS only). Set explicit `active_states` and
+  `terminal_states`; active entries may be `open` and terminal entries may be `closed`.
+- Reads and identity: polling is scoped to the configured repository; `issue.id` is the
+  repository issue number, `issue.identifier` is `GH-<number>`, hidden or deleted `404` issues are
+  omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
+- Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
+  `body`; Symphony executes it host-side with the session-bound token, strips `GITHUB_TOKEN` and
+  configured `$VAR` token names from the Codex child, and leaves raw tool access limited by that
+  token's GitHub permissions.
+
+### Jira Cloud adapter
+
+- Config: use `tracker.kind: jira` with provider `base_url`, `email`, `api_token`, and required
+  `project_key`; the first three default to `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`
+  and accept `$VAR`. Set explicit Jira-native `active_states` and `terminal_states`.
+- Issues and reads: candidate reads and ID refreshes stay scoped to the configured project and
+  requested statuses; `issue.id` is Jira's immutable ID and `issue.identifier` is the issue key.
+- Tool: `jira_rest` sends relative `/rest/api/3/` requests host-side with configured Basic auth,
+  strips token environment variables from Codex, and can reach whatever the Jira credential can.
+
 ### Asana adapter
 
 - Config: use `tracker.kind: asana` with required `tracker.provider.project_gid`, optional
@@ -303,6 +327,27 @@ Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH h
 The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
 a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
 Linear issue, then marks the project completed so the run remains visible in Linear.
+
+Run the opt-in GitHub Issues live test with a disposable/scratch repository:
+
+```bash
+cd elixir
+export SYMPHONY_LIVE_GITHUB_REPO=owner/scratch-repo
+export GITHUB_TOKEN=...
+SYMPHONY_RUN_GITHUB_LIVE_E2E=1 mix test test/symphony_elixir/github_live_e2e_test.exs
+```
+
+Run the opt-in Jira Cloud live test against a disposable project whose credential can browse,
+create, comment on, transition, and delete issues:
+
+```bash
+cd elixir
+export JIRA_BASE_URL=https://your-site.atlassian.net
+export JIRA_EMAIL=...
+export JIRA_API_TOKEN=...
+export SYMPHONY_LIVE_JIRA_PROJECT_KEY=TEST
+SYMPHONY_RUN_JIRA_LIVE_E2E=1 mix test test/symphony_elixir/jira_live_e2e_test.exs
+```
 
 Run the opt-in Asana live E2E against disposable Asana resources:
 

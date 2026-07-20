@@ -219,8 +219,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "success"
            ] == false
 
-    assert {:error, {:unsupported_tracker_kind, "jira"}} =
-             SymphonyElixir.Tracker.adapter_for_kind("jira")
+    assert {:error, {:unsupported_tracker_kind, "future-tracker"}} =
+             SymphonyElixir.Tracker.adapter_for_kind("future-tracker")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
