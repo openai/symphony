@@ -538,7 +538,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "terminal issue state stops running agent and cleans workspace" do
+  test "terminal issue state stops running agent before cleaning workspace" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -548,25 +548,38 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-2"
     issue_identifier = "MT-556"
     workspace = Path.join(test_root, issue_identifier)
+    worker_alive_marker = Path.join(test_root, "worker-alive")
+    cleanup_marker = Path.join(test_root, "cleanup-order")
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: test_root,
         tracker_active_states: ["Todo", "In Progress", "In Review"],
-        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
+        hook_before_remove: "if [ -f \"#{worker_alive_marker}\" ]; then printf alive > \"#{cleanup_marker}\"; else printf stopped > \"#{cleanup_marker}\"; fi"
       )
 
-      File.mkdir_p!(test_root)
       File.mkdir_p!(workspace)
+      {:ok, task_supervisor} = Task.Supervisor.start_link()
 
-      agent_pid =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
+      {:ok, agent_pid} =
+        Task.Supervisor.start_child(task_supervisor, fn ->
+          Process.flag(:trap_exit, true)
+          File.write!(worker_alive_marker, "alive")
+
+          try do
+            receive do
+              {:EXIT, _from, :shutdown} -> :ok
+            end
+          after
+            File.rm(worker_alive_marker)
           end
         end)
 
+      assert eventually_value(fn -> if File.exists?(worker_alive_marker), do: true end)
+
       state = %Orchestrator.State{
+        task_supervisor: task_supervisor,
         running: %{
           issue_id => %{
             pid: agent_pid,
@@ -595,7 +608,75 @@ defmodule SymphonyElixir.CoreTest do
       refute Map.has_key?(updated_state.running, issue_id)
       refute MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
+      assert File.read!(cleanup_marker) == "stopped"
       refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "terminal cleanup uses the workspace recorded for the running issue" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-terminal-recorded-workspace-#{System.unique_integer([:positive])}"
+      )
+
+    old_root = Path.join(test_root, "old-root")
+    new_root = Path.join(test_root, "new-root")
+    issue_id = "issue-recorded-workspace"
+    issue_identifier = "MT-557"
+    old_workspace = Path.join(old_root, issue_identifier)
+    new_workspace = Path.join(new_root, issue_identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: old_root,
+        tracker_active_states: ["Todo", "In Progress", "In Review"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+      )
+
+      File.mkdir_p!(old_workspace)
+      File.mkdir_p!(new_workspace)
+
+      agent_pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            workspace_path: old_workspace,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: new_root)
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "Closed",
+        title: "Done",
+        description: "Completed",
+        labels: []
+      }
+
+      _updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute File.exists?(old_workspace)
+      assert File.exists?(new_workspace)
     after
       File.rm_rf(test_root)
     end
@@ -870,6 +951,54 @@ defmodule SymphonyElixir.CoreTest do
 
     refute MapSet.member?(updated_state.claimed, issue_id)
     refute Map.has_key?(updated_state.retry_attempts, issue_id)
+  end
+
+  test "retry releases its claim when dispatch revalidation no longer finds the issue" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-retry-refresh-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "retry-refreshed-issue"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        hook_before_run: "exit 1"
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+      {:ok, task_supervisor} = Task.Supervisor.start_link()
+
+      state = %Orchestrator.State{
+        task_supervisor: task_supervisor,
+        claimed: MapSet.new([issue_id]),
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-566",
+        title: "Retry refreshed issue",
+        state: "In Progress",
+        dispatchable: true,
+        labels: []
+      }
+
+      updated_state =
+        Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 1, %{
+          identifier: issue.identifier,
+          error: "agent exited"
+        })
+
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute Map.has_key?(updated_state.retry_attempts, issue_id)
+    after
+      File.rm_rf(test_root)
+    end
   end
 
   test "agent runner does not continue after a required label is removed" do

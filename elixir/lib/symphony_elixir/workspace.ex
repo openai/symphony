@@ -99,8 +99,7 @@ defmodule SymphonyElixir.Workspace do
       true ->
         case validate_workspace_path(workspace, nil) do
           :ok ->
-            maybe_run_before_remove_hook(workspace, nil)
-            File.rm_rf(workspace)
+            remove_local_workspace(workspace)
 
           {:error, reason} ->
             {:error, reason, ""}
@@ -131,6 +130,35 @@ defmodule SymphonyElixir.Workspace do
       {:error, reason} ->
         {:error, reason, ""}
     end
+  end
+
+  @doc false
+  @spec remove_recorded(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
+  def remove_recorded(workspace, nil) when is_binary(workspace) do
+    if Path.type(workspace) == :absolute do
+      case validate_recorded_workspace_path(workspace) do
+        :ok ->
+          remove_local_workspace(workspace)
+
+        {:error, reason} ->
+          {:error, reason, ""}
+      end
+    else
+      {:error, {:workspace_path_unreadable, workspace, :not_absolute}, ""}
+    end
+  end
+
+  def remove_recorded(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
+    remove(workspace, worker_host)
+  end
+
+  def remove_recorded(workspace, _worker_host) do
+    {:error, {:workspace_path_unreadable, workspace, :invalid}, ""}
+  end
+
+  defp remove_local_workspace(workspace) do
+    maybe_run_before_remove_hook(workspace, nil)
+    File.rm_rf(workspace)
   end
 
   @spec remove_issue_workspaces(term()) :: :ok
@@ -431,8 +459,31 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
+    validate_local_workspace_path(workspace, Config.local_workspace_root())
+  end
+
+  defp validate_workspace_path(workspace, worker_host)
+       when is_binary(workspace) and is_binary(worker_host) do
+    cond do
+      String.trim(workspace) == "" ->
+        {:error, {:workspace_path_unreadable, workspace, :empty}}
+
+      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
+        {:error, {:workspace_path_unreadable, workspace, :invalid_characters}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_recorded_workspace_path(workspace) when is_binary(workspace) do
+    validate_local_workspace_path(workspace, Path.dirname(workspace))
+  end
+
+  defp validate_local_workspace_path(workspace, workspace_root)
+       when is_binary(workspace) and is_binary(workspace_root) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Config.local_workspace_root()
+    expanded_root = Path.expand(workspace_root)
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -455,20 +506,6 @@ defmodule SymphonyElixir.Workspace do
     else
       {:error, {:path_canonicalize_failed, path, reason}} ->
         {:error, {:workspace_path_unreadable, path, reason}}
-    end
-  end
-
-  defp validate_workspace_path(workspace, worker_host)
-       when is_binary(workspace) and is_binary(worker_host) do
-    cond do
-      String.trim(workspace) == "" ->
-        {:error, {:workspace_path_unreadable, workspace, :empty}}
-
-      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
-        {:error, {:workspace_path_unreadable, workspace, :invalid_characters}}
-
-      true ->
-        :ok
     end
   end
 
