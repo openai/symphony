@@ -240,35 +240,16 @@ codex:
   `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
   human-readable provider detail.
 
-### Asana adapter profile
+### Asana adapter
 
 - Config: use `tracker.kind: asana` with required `tracker.provider.project_gid`, optional
   `endpoint` (default `https://app.asana.com/api/1.0`), and `api_key` (defaults to `ASANA_PAT` and
-  accepts `$VAR`). Keep explicit nonblank `active_states` and `terminal_states` under `tracker`;
-  their values are the configured project's section names.
-- Scope and paging: candidate reads list tasks in the configured project with Asana offset
-  pagination and filter the normalized section name. ID refreshes fetch each task by GID, omit
-  deleted tasks and tasks no longer in the configured project, and fail malformed in-scope records.
-  Empty state/ID lists return `{:ok, []}` without an Asana request.
-- Identity and normalization: `issue.id` is the task GID, `issue.identifier` is route-safe
-  `ASANA-<gid>`, and `issue.native_ref` carries task, project, and section GIDs. State is the
-  configured-project membership's section name; notes, permalink, assignee GID, tags, and RFC 3339
-  timestamps map onto the generic issue. Tags are trimmed, lowercased, deduplicated, and blanks are
-  dropped.
-- Dispatchability: incomplete non-section task records are dispatchable. The generic scheduler
-  then applies active/terminal states, required labels, claims, retries, and concurrency.
-- Tool: the adapter advertises `asana_api`, accepting `method`, a relative Asana REST `path`, an
-  optional object `query`, and optional JSON `body`. Symphony forwards the body unchanged,
-  executes the request host-side with the session-bound endpoint/token, preserves REST
-  status/body in the tool result, and strips `ASANA_PAT` plus any configured `$VAR` token name from
-  the Codex child. Project scope applies to scheduler reads, not raw tool calls.
-- Responsibility and errors: `asana_api` adds no idempotency, retry, or scope policy; workflows own
-  provider-specific mutations and error handling. Read/config failures use
-  `{:error, :missing_asana_api_key}`, `{:error, :missing_asana_project_gid}`,
-  `{:error, :invalid_asana_endpoint}`, `{:error, {:asana_api_status, status}}`,
-  `{:error, {:asana_api_request, reason}}`, `{:error, :asana_unknown_payload}`, or
-  `{:error, :asana_missing_next_page_offset}`. Tool results use the same `success`/JSON `output`/
-  text `contentItems` shape as other provider-native tools.
+  accepts `$VAR`); `active_states` and `terminal_states` are project section names.
+- Scope: Symphony polls tasks in the configured project, treats their section as state, and omits
+  deleted or out-of-project tasks during ID refreshes.
+- Tool: `asana_api` sends relative Asana REST requests host-side with the configured auth; Symphony
+  strips `ASANA_PAT` and configured token variables from the Codex child, while raw tool calls are
+  not limited to the configured project.
 
 ## Web dashboard
 
@@ -323,8 +304,7 @@ The live test creates a temporary Linear project and issue, writes a temporary `
 a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
 Linear issue, then marks the project completed so the run remains visible in Linear.
 
-Run the opt-in Asana live E2E separately when you want Symphony to create and delete a disposable
-project, sections, and task while exercising a real `codex app-server` session:
+Run the opt-in Asana live E2E against disposable Asana resources:
 
 ```bash
 cd elixir
@@ -334,9 +314,6 @@ export SYMPHONY_LIVE_ASANA_WORKSPACE_GID=...
 # export SYMPHONY_LIVE_ASANA_TEAM_GID=...
 SYMPHONY_RUN_ASANA_LIVE_E2E=1 mix test test/symphony_elixir/asana_live_e2e_test.exs
 ```
-
-The Asana live test verifies both tracker reads, a workspace file proving the child did not inherit
-`ASANA_PAT`, a real `asana_api` comment, section move, completion, direct API readback, and cleanup.
 
 ## FAQ
 
