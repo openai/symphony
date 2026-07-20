@@ -1020,7 +1020,7 @@ Completion conditions:
 - Targeted-protocol turn completion signal -> success
 - Targeted-protocol turn failure signal -> failure
 - Targeted-protocol turn cancellation signal -> failure
-- turn timeout (`turn_timeout_ms`) -> failure
+- turn stream silence timeout (`turn_timeout_ms`) -> failure
 - subprocess exit -> failure
 
 Continuation processing:
@@ -1143,7 +1143,8 @@ User-input-required policy:
 Timeouts:
 
 - `codex.read_timeout_ms`: request/response timeout during startup and sync requests
-- `codex.turn_timeout_ms`: total turn stream timeout
+- `codex.turn_timeout_ms`: maximum silence interval while a turn stream is active; each
+  app-server output resets it, so it is not a total turn runtime cap
 - `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
 
 Error mapping (RECOMMENDED normalized categories):

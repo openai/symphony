@@ -11,8 +11,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
-  @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
-
   @type session :: %{
           port: port(),
           metadata: map(),
@@ -819,38 +817,21 @@ defmodule SymphonyElixir.Codex.AppServer do
         :approved
 
       :error ->
-        reply_with_non_interactive_tool_input_answer(
-          port,
-          id,
-          params,
-          payload,
-          payload_string,
-          on_message,
-          metadata
-        )
+        :input_required
     end
   end
 
   defp maybe_auto_answer_tool_request_user_input(
-         port,
-         id,
-         params,
-         payload,
-         payload_string,
-         on_message,
-         metadata,
+         _port,
+         _id,
+         _params,
+         _payload,
+         _payload_string,
+         _on_message,
+         _metadata,
          false
-       ) do
-    reply_with_non_interactive_tool_input_answer(
-      port,
-      id,
-      params,
-      payload,
-      payload_string,
-      on_message,
-      metadata
-    )
-  end
+       ),
+       do: :input_required
 
   defp tool_request_user_input_approval_answers(%{"questions" => questions}) when is_list(questions) do
     answers =
@@ -873,64 +854,15 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp tool_request_user_input_approval_answers(_params), do: :error
 
-  defp reply_with_non_interactive_tool_input_answer(
-         port,
-         id,
-         params,
-         payload,
-         payload_string,
-         on_message,
-         metadata
-       ) do
-    case tool_request_user_input_unavailable_answers(params) do
-      {:ok, answers} ->
-        send_message(port, %{"id" => id, "result" => %{"answers" => answers}})
-
-        emit_message(
-          on_message,
-          :tool_input_auto_answered,
-          %{payload: payload, raw: payload_string, answer: @non_interactive_tool_input_answer},
-          metadata
-        )
-
-        :approved
-
-      :error ->
-        :input_required
-    end
-  end
-
-  defp tool_request_user_input_unavailable_answers(%{"questions" => questions}) when is_list(questions) do
-    answers =
-      Enum.reduce_while(questions, %{}, fn question, acc ->
-        case tool_request_user_input_question_id(question) do
-          {:ok, question_id} ->
-            {:cont, Map.put(acc, question_id, %{"answers" => [@non_interactive_tool_input_answer]})}
-
-          :error ->
-            {:halt, :error}
-        end
-      end)
-
-    case answers do
-      :error -> :error
-      answer_map when map_size(answer_map) > 0 -> {:ok, answer_map}
-      _ -> :error
-    end
-  end
-
-  defp tool_request_user_input_unavailable_answers(_params), do: :error
-
-  defp tool_request_user_input_question_id(%{"id" => question_id}) when is_binary(question_id),
-    do: {:ok, question_id}
-
-  defp tool_request_user_input_question_id(_question), do: :error
-
   defp tool_request_user_input_approval_answer(%{"id" => question_id, "options" => options})
        when is_binary(question_id) and is_list(options) do
-    case tool_request_user_input_approval_option_label(options) do
-      nil -> :error
-      answer_label -> {:ok, question_id, answer_label}
+    if String.starts_with?(question_id, "mcp_tool_call_approval_") do
+      case tool_request_user_input_approval_option_label(options) do
+        nil -> :error
+        answer_label -> {:ok, question_id, answer_label}
+      end
+    else
+      :error
     end
   end
 

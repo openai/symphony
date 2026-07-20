@@ -76,6 +76,95 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "turn timeout resets on stream updates and fires after silence" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-turn-timeout-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-TIMEOUT")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-timeout"}}}' ;;
+          4)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-timeout"}}}'
+            sleep 0.15
+            printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"one"}}}'
+            sleep 0.15
+            printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"two"}}}'
+            sleep 0.15
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_timeout_ms: 250
+      )
+
+      issue = %Issue{
+        id: "issue-turn-timeout",
+        identifier: "MT-TIMEOUT",
+        title: "Stream timeout",
+        description: "Keep active streams alive",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-TIMEOUT",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "stream updates", issue)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-silent"}}}' ;;
+          4)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-silent"}}}'
+            sleep 0.4
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_timeout_ms: 100
+      )
+
+      assert {:error, :turn_timeout} = AppServer.run(workspace, "silent turn", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(
@@ -626,7 +715,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server sends a generic non-interactive answer for freeform tool input prompts" do
+  test "app server blocks freeform tool input prompts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -687,22 +776,16 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      on_message = fn message -> send(self(), {:app_server_message, message}) end
+      assert {:error, {:turn_input_required, payload}} =
+               AppServer.run(workspace, "Handle generic tool input", issue)
 
-      assert {:ok, _result} =
-               AppServer.run(workspace, "Handle generic tool input", issue, on_message: on_message)
-
-      assert_received {:app_server_message,
-                       %{
-                         event: :tool_input_auto_answered,
-                         answer: "This is a non-interactive session. Operator input is unavailable."
-                       }}
+      assert payload["method"] == "item/tool/requestUserInput"
     after
       File.rm_rf(test_root)
     end
   end
 
-  test "app server sends a generic non-interactive answer for option-based tool input prompts" do
+  test "app server blocks option-based tool input prompts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -713,27 +796,13 @@ defmodule SymphonyElixir.AppServerTest do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-719")
       codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-tool-user-input-options.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-options.trace}"
       count=0
-      while IFS= read -r line; do
+      while IFS= read -r _line; do
         count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
 
         case \"$count\" in
           1)
@@ -746,7 +815,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-719\"}}}'
-            printf '%s\\n' '{\"id\":112,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-719\",\"questions\":[{\"header\":\"Choose an action\",\"id\":\"options-719\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Use the default behavior.\",\"label\":\"Use default\"},{\"description\":\"Skip this step.\",\"label\":\"Skip\"}],\"question\":\"How should I proceed?\"}],\"threadId\":\"thread-719\",\"turnId\":\"turn-719\"}}'
+            printf '%s\\n' '{\"id\":112,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-719\",\"questions\":[{\"header\":\"Choose an action\",\"id\":\"options-719\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Proceed with the requested action.\",\"label\":\"Allow\"},{\"description\":\"Do not proceed.\",\"label\":\"Deny\"}],\"question\":\"How should I proceed?\"}],\"threadId\":\"thread-719\",\"turnId\":\"turn-719\"}}'
             ;;
           5)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -763,40 +832,24 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
       )
 
       issue = %Issue{
         id: "issue-tool-user-input-options",
         identifier: "MT-719",
-        title: "Option based tool input answer",
-        description: "Ensure option prompts receive a generic non-interactive answer",
+        title: "Option based tool input block",
+        description: "Ensure option prompts require operator input",
         state: "In Progress",
         url: "https://example.org/issues/MT-719",
         labels: ["backend"]
       }
 
-      assert {:ok, _result} =
+      assert {:error, {:turn_input_required, payload}} =
                AppServer.run(workspace, "Handle option based tool input", issue)
 
-      trace = File.read!(trace_file)
-      lines = String.split(trace, "\n", trim: true)
-
-      assert Enum.any?(lines, fn line ->
-               if String.starts_with?(line, "JSON:") do
-                 payload =
-                   line
-                   |> String.trim_leading("JSON:")
-                   |> Jason.decode!()
-
-                 payload["id"] == 112 and
-                   get_in(payload, ["result", "answers", "options-719", "answers"]) == [
-                     "This is a non-interactive session. Operator input is unavailable."
-                   ]
-               else
-                 false
-               end
-             end)
+      assert payload["method"] == "item/tool/requestUserInput"
     after
       File.rm_rf(test_root)
     end
