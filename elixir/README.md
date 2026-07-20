@@ -238,36 +238,15 @@ codex:
   `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
   human-readable provider detail.
 
-### Jira Cloud adapter profile
+### Jira Cloud adapter
 
-- Config: use `tracker.kind: jira` with `tracker.provider.base_url` (defaults to
-  `JIRA_BASE_URL` and accepts `$VAR`), `email` (defaults to `JIRA_EMAIL`), `api_token`
-  (defaults to `JIRA_API_TOKEN` and accepts `$VAR`), and required `project_key`.
-  Set explicit provider-native `active_states` and `terminal_states`; Jira workflows are
-  tenant-defined, so Symphony does not invent status defaults.
-- Scope and paging: candidate reads use Jira enhanced search with project/status JQL and follow
-  opaque `nextPageToken` pages of 100. ID refreshes use `issue/bulkfetch` in batches of 100 and
-  omit missing or out-of-project issues. Empty state/ID lists return `{:ok, []}` without a Jira
-  request.
-- Identity and normalization: `issue.id` is Jira's immutable issue ID and `issue.identifier` is
-  the issue key. State keeps Jira's status spelling; ADF descriptions are projected to plain text,
-  labels are trimmed/lowercased/deduplicated, assignee account IDs are preserved, and Jira's
-  `+0000` timestamp offsets are parsed. The adapter leaves priority and blockers unset because
-  those semantics are tenant-specific.
-- Tool: the adapter advertises `jira_rest`, accepting `method`, a relative path beginning with
-  `/rest/api/3/`, optional object `query`, and optional JSON `body`. Symphony executes it host-side
-  with Basic auth and strips `JIRA_API_TOKEN` plus any configured `$VAR` token name from the Codex
-  child. Scheduler reads are project-scoped; the raw tool can access whatever the configured Jira
-  credential can access.
-- Responsibility and errors: `jira_rest` adds no idempotency key, retry, scope guard, or
-  rate-limit policy. It preserves REST `status` and `body` in the tool result, with non-2xx
-  responses marked `"success" => false`. Read/config failures use
-  `{:error, :missing_jira_active_states}`, `{:error, :missing_jira_terminal_states}`,
-  `{:error, :invalid_jira_states}`, `{:error, :invalid_jira_base_url}`,
-  `{:error, :missing_jira_email}`, `{:error, :missing_jira_api_token}`,
-  `{:error, :missing_jira_project_key}`, `{:error, {:jira_api_status, status}}`,
-  `{:error, {:jira_api_request, reason}}`, `{:error, :jira_unknown_payload}`, or
-  `{:error, :jira_missing_next_page_token}`.
+- Config: use `tracker.kind: jira` with provider `base_url`, `email`, `api_token`, and required
+  `project_key`; the first three default to `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`
+  and accept `$VAR`. Set explicit Jira-native `active_states` and `terminal_states`.
+- Issues and reads: candidate reads and ID refreshes stay scoped to the configured project and
+  requested statuses; `issue.id` is Jira's immutable ID and `issue.identifier` is the issue key.
+- Tool: `jira_rest` sends relative `/rest/api/3/` requests host-side with configured Basic auth,
+  strips token environment variables from Codex, and can reach whatever the Jira credential can.
 
 ## Web dashboard
 
@@ -322,8 +301,8 @@ The live test creates a temporary Linear project and issue, writes a temporary `
 a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
 Linear issue, then marks the project completed so the run remains visible in Linear.
 
-Run the opt-in Jira Cloud live test with a disposable project whose credential can browse, create,
-comment on, transition, and delete issues:
+Run the opt-in Jira Cloud live test against a disposable project whose credential can browse,
+create, comment on, transition, and delete issues:
 
 ```bash
 cd elixir
@@ -333,10 +312,6 @@ export JIRA_API_TOKEN=...
 export SYMPHONY_LIVE_JIRA_PROJECT_KEY=TEST
 SYMPHONY_RUN_JIRA_LIVE_E2E=1 mix test test/symphony_elixir/jira_live_e2e_test.exs
 ```
-
-It creates one disposable issue, verifies both tracker reads, runs a real local Codex worker,
-requires `jira_rest` to post an exact comment and transition the issue to an available terminal
-status, verifies the workspace file and direct Jira readback, then deletes the test issue.
 
 ## FAQ
 
