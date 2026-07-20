@@ -163,6 +163,74 @@ defmodule SymphonyElixir.Jira.AdapterTest do
              )
   end
 
+  test "client retains inward Blocks links and gates only ready Jira issues" do
+    active_blocker = linked_issue("20001", "SYM-10", "In Progress")
+    terminal_blocker = linked_issue("20002", "OTHER-20", "Ready for Release")
+
+    issue =
+      raw_issue("10001", "SYM-1")
+      |> put_in(
+        [
+          "fields",
+          "issuelinks"
+        ],
+        [
+          %{"type" => %{"name" => " Blocks "}, "inwardIssue" => active_blocker},
+          %{"type" => %{"name" => "blocks"}, "inwardIssue" => terminal_blocker},
+          %{
+            "type" => %{"name" => "Relates"},
+            "inwardIssue" => linked_issue("20003", "SYM-30", "In Progress")
+          },
+          %{
+            "type" => %{"name" => "Blocks"},
+            "outwardIssue" => linked_issue("20004", "SYM-40", "In Progress")
+          }
+        ]
+      )
+
+    normalized = JiraClient.normalize_issue_for_test(issue, tracker_settings())
+
+    assert normalized.blocked_by == [
+             %{id: "20001", identifier: "SYM-10", state: "In Progress"},
+             %{id: "20002", identifier: "OTHER-20", state: "Ready for Release"}
+           ]
+
+    refute normalized.dispatchable
+
+    terminal_only =
+      issue
+      |> put_in(["fields", "issuelinks"], [
+        %{"type" => %{"name" => "Blocks"}, "inwardIssue" => terminal_blocker}
+      ])
+      |> JiraClient.normalize_issue_for_test(%{
+        tracker_settings()
+        | terminal_states: ["Ready for Release"]
+      })
+
+    assert terminal_only.dispatchable
+
+    unknown_blocker =
+      issue
+      |> put_in(["fields", "status", "name"], "Todo")
+      |> put_in(["fields", "issuelinks"], [
+        %{
+          "type" => %{"name" => "Blocks"},
+          "inwardIssue" => %{"id" => "20005"}
+        }
+      ])
+      |> JiraClient.normalize_issue_for_test(tracker_settings())
+
+    assert unknown_blocker.blocked_by == [%{id: "20005", identifier: nil, state: nil}]
+    refute unknown_blocker.dispatchable
+
+    in_progress =
+      issue
+      |> put_in(["fields", "status", "name"], "In Progress")
+      |> JiraClient.normalize_issue_for_test(tracker_settings())
+
+    assert in_progress.dispatchable
+  end
+
   test "client pages enhanced search, filters states, and drops malformed candidates" do
     request_fun = fn "POST", "/rest/api/3/search/jql", %{}, body, settings ->
       send(self(), {:jira_search, body, settings})
@@ -209,6 +277,7 @@ defmodule SymphonyElixir.Jira.AdapterTest do
                     }, %{project_key: "SYM"}}
 
     assert "summary" in fields
+    assert "issuelinks" in fields
     assert_receive {:jira_search, %{"nextPageToken" => "next-page"}, %{project_key: "SYM"}}
 
     assert {:ok, []} =
@@ -236,6 +305,7 @@ defmodule SymphonyElixir.Jira.AdapterTest do
     ids = Enum.map(1..101, &Integer.to_string/1)
 
     request_fun = fn "POST", "/rest/api/3/issue/bulkfetch", %{}, body, _settings ->
+      assert "issuelinks" in body["fields"]
       send(self(), {:jira_bulk_ids, body["issueIdsOrKeys"]})
       issues = Enum.map(body["issueIdsOrKeys"], &raw_issue(&1, "SYM-#{&1}"))
       {:ok, %{status: 200, body: %{"issues" => issues}}}
@@ -278,6 +348,36 @@ defmodule SymphonyElixir.Jira.AdapterTest do
                  {:ok, %{status: 200, body: %{"issues" => [malformed]}}}
                end
              )
+  end
+
+  test "client refreshes Jira blockers before dispatch" do
+    request_fun = fn "POST", "/rest/api/3/issue/bulkfetch", %{}, body, _settings ->
+      assert "issuelinks" in body["fields"]
+
+      issue =
+        raw_issue("10001", "SYM-1")
+        |> put_in(["fields", "issuelinks"], [
+          %{
+            "type" => %{"name" => "Blocks"},
+            "inwardIssue" => linked_issue("20001", "SYM-10", "In Progress")
+          }
+        ])
+
+      {:ok, %{status: 200, body: %{"issues" => [issue]}}}
+    end
+
+    assert {:ok, [issue]} =
+             JiraClient.fetch_issues_by_ids_for_test(
+               ["10001"],
+               tracker_settings(),
+               request_fun
+             )
+
+    assert issue.blocked_by == [
+             %{id: "20001", identifier: "SYM-10", state: "In Progress"}
+           ]
+
+    refute issue.dispatchable
   end
 
   test "jira_rest preserves REST status and body while rejecting unsafe arguments" do
@@ -458,6 +558,14 @@ defmodule SymphonyElixir.Jira.AdapterTest do
         "updated" => "2026-01-02T00:00:00.000+0000",
         "project" => %{"key" => project_key}
       }
+    }
+  end
+
+  defp linked_issue(id, key, state) do
+    %{
+      "id" => id,
+      "key" => key,
+      "fields" => %{"status" => %{"name" => state}}
     }
   end
 

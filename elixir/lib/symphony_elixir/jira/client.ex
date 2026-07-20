@@ -8,7 +8,17 @@ defmodule SymphonyElixir.Jira.Client do
   alias SymphonyElixir.Tracker.Issue
 
   @page_size 100
-  @issue_fields ["summary", "description", "status", "labels", "assignee", "created", "updated", "project"]
+  @issue_fields [
+    "summary",
+    "description",
+    "status",
+    "labels",
+    "assignee",
+    "created",
+    "updated",
+    "project",
+    "issuelinks"
+  ]
 
   @spec validate_settings(map()) :: :ok | {:error, term()}
   def validate_settings(tracker_settings) do
@@ -222,6 +232,7 @@ defmodule SymphonyElixir.Jira.Client do
        when is_binary(id) and is_binary(key) and is_map(fields) do
     title = fields["summary"]
     state = get_in(fields, ["status", "name"])
+    blockers = extract_blockers(fields["issuelinks"])
 
     if same_project_key?(issue_project_key(%{"fields" => fields}), settings.project_key) and
          present_string?(id) and
@@ -238,8 +249,8 @@ defmodule SymphonyElixir.Jira.Client do
         url: "#{settings.base_url}/browse/#{URI.encode(key, &URI.char_unreserved?/1)}",
         assignee_id: get_in(fields, ["assignee", "accountId"]),
         labels: extract_labels(fields["labels"]),
-        blocked_by: [],
-        dispatchable: true,
+        blocked_by: blockers,
+        dispatchable: dispatchable?(state, blockers, settings.terminal_states),
         created_at: parse_datetime(fields["created"]),
         updated_at: parse_datetime(fields["updated"])
       }
@@ -296,6 +307,43 @@ defmodule SymphonyElixir.Jira.Client do
   end
 
   defp extract_labels(_labels), do: []
+
+  defp extract_blockers(links) when is_list(links) do
+    Enum.flat_map(links, &extract_blocker/1)
+  end
+
+  defp extract_blockers(_links), do: []
+
+  defp extract_blocker(%{"type" => %{"name" => type_name}, "inwardIssue" => blocker_issue})
+       when is_binary(type_name) and is_map(blocker_issue) do
+    if normalize_state(type_name) == "blocks" do
+      [blocker_ref(blocker_issue)]
+    else
+      []
+    end
+  end
+
+  defp extract_blocker(_link), do: []
+
+  defp blocker_ref(blocker_issue) do
+    %{
+      id: optional_string(blocker_issue["id"]),
+      identifier: optional_string(blocker_issue["key"]),
+      state: optional_string(get_in(blocker_issue, ["fields", "status", "name"]))
+    }
+  end
+
+  defp dispatchable?(state, blockers, terminal_states) do
+    normalize_state(state) not in ["todo", "to do"] or
+      Enum.all?(blockers, &terminal_blocker?(&1, terminal_states))
+  end
+
+  defp terminal_blocker?(%{state: state}, terminal_states)
+       when is_binary(state) and is_list(terminal_states) do
+    normalize_state(state) in terminal_states
+  end
+
+  defp terminal_blocker?(_blocker, _terminal_states), do: false
 
   defp issue_project_key(raw_issue), do: get_in(raw_issue, ["fields", "project", "key"])
 
@@ -378,7 +426,8 @@ defmodule SymphonyElixir.Jira.Client do
            base_url: String.trim_trailing(base_url, "/"),
            email: email,
            api_token: api_token,
-           project_key: project_key
+           project_key: project_key,
+           terminal_states: terminal_states(tracker_settings)
          }}
     end
   end
@@ -406,6 +455,20 @@ defmodule SymphonyElixir.Jira.Client do
   end
 
   defp normalize_string(_value), do: nil
+
+  defp optional_string(value) when is_binary(value) do
+    if present_string?(value), do: value, else: nil
+  end
+
+  defp optional_string(_value), do: nil
+
+  defp terminal_states(%{terminal_states: states}) when is_list(states) do
+    states
+    |> Enum.map(&normalize_state/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp terminal_states(_tracker_settings), do: []
 
   defp env_reference_names(values) do
     Enum.flat_map(values, fn
