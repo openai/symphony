@@ -872,7 +872,7 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(updated_state.retry_attempts, issue_id)
   end
 
-  test "retry dispatches the issue from its successful refresh" do
+  test "retry releases its claim when dispatch revalidation no longer finds the issue" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -912,8 +912,8 @@ defmodule SymphonyElixir.CoreTest do
           error: "agent exited"
         })
 
-      assert MapSet.member?(updated_state.claimed, issue_id)
-      assert Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Map.has_key?(updated_state.running, issue_id)
       refute Map.has_key?(updated_state.retry_attempts, issue_id)
     after
       File.rm_rf(test_root)

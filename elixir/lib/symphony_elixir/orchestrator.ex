@@ -906,22 +906,35 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
-    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issues_by_ids/1, terminal_state_set()) do
+    case refresh_issue_for_dispatch(issue) do
       {:ok, %Issue{} = refreshed_issue} ->
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
 
+      {:skip, _reason} ->
+        state
+
+      {:error, _reason} ->
+        state
+    end
+  end
+
+  defp refresh_issue_for_dispatch(issue) do
+    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issues_by_ids/1, terminal_state_set()) do
+      {:ok, %Issue{} = refreshed_issue} ->
+        {:ok, refreshed_issue}
+
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
-        state
+        {:skip, :missing}
 
       {:skip, %Issue{} = refreshed_issue} ->
         Logger.info("Skipping stale dispatch after issue refresh: #{issue_context(refreshed_issue)} state=#{inspect(refreshed_issue.state)} blocked_by=#{length(refreshed_issue.blocked_by)}")
 
-        state
+        {:skip, refreshed_issue}
 
       {:error, reason} ->
         Logger.warning("Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}")
-        state
+        {:error, reason}
     end
   end
 
@@ -1166,7 +1179,28 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, do_dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      case refresh_issue_for_dispatch(issue) do
+        {:ok, %Issue{} = refreshed_issue} ->
+          {:noreply, do_dispatch_issue(state, refreshed_issue, attempt, metadata[:worker_host])}
+
+        {:skip, :missing} ->
+          {:noreply, release_issue_claim(state, issue.id)}
+
+        {:skip, %Issue{} = refreshed_issue} ->
+          handle_retry_issue_lookup(refreshed_issue, state, issue.id, attempt, metadata)
+
+        {:error, reason} ->
+          {:noreply,
+           schedule_issue_retry(
+             state,
+             issue.id,
+             attempt + 1,
+             Map.merge(metadata, %{
+               identifier: issue.identifier,
+               error: "retry dispatch refresh failed: #{inspect(reason)}"
+             })
+           )}
+      end
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
