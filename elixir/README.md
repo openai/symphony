@@ -238,35 +238,19 @@ codex:
   `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
   human-readable provider detail.
 
-### GitHub Issues adapter profile
+### GitHub Issues adapter
 
 - Config: use `tracker.kind: github` with required `tracker.provider.repo` in `owner/repo` form,
   optional `token` (defaults to `GITHUB_TOKEN` and accepts `$VAR`), and optional `api_url`
   (default `https://api.github.com`, HTTPS only). Set explicit `active_states` and
   `terminal_states`; active entries may be `open` and terminal entries may be `closed`.
-- Scope and paging: candidate reads call the configured repository's issues endpoint with the
-  requested GitHub state and pages of 100. ID refreshes use the repository-scoped issue number;
-  missing/hidden `404` issues are omitted. Empty state/ID lists return `{:ok, []}` without a
-  GitHub request.
-- Identity and normalization: `issue.id` is the repository-scoped issue number as a string,
-  `issue.identifier` is route-safe `GH-<number>`, and `issue.native_ref` preserves the repo,
-  number, GitHub ID, and node ID. State keeps GitHub's `open`/`closed` spelling; labels are
-  trimmed, lowercased, deduplicated, and blanks are dropped. Pull requests returned by GitHub's
-  issues endpoint remain visible but are `dispatchable: false`.
-- Tool: the adapter advertises `github_api`, accepting `method`, relative GitHub REST `path`,
-  optional object `params`, and optional JSON `body`. Symphony executes it host-side with the
-  session-bound token and strips `GITHUB_TOKEN` plus any configured `$VAR` token name from the
-  Codex child. Scheduler reads are repo-scoped; the raw tool can access whatever the configured
-  GitHub token can access.
-- Responsibility and errors: `github_api` adds no idempotency key, retry, scope guard, or
-  rate-limit policy. It preserves REST `status` and `body` in the tool result, with non-2xx
-  responses marked `"success" => false`. Read/config failures use
-  `{:error, :missing_github_active_states}`, `{:error, :missing_github_terminal_states}`,
-  `{:error, :invalid_github_states}`, `{:error, :missing_github_repo}`,
-  `{:error, :invalid_github_repo}`,
-  `{:error, :missing_github_token}`, `{:error, :invalid_github_api_url}`,
-  `{:error, :invalid_github_issue_id}`, `{:error, {:github_api_status, status}}`,
-  `{:error, {:github_api_request, reason}}`, or `{:error, :github_unknown_payload}`.
+- Reads and identity: polling is scoped to the configured repository; `issue.id` is the
+  repository issue number, `issue.identifier` is `GH-<number>`, hidden or deleted `404` issues are
+  omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
+- Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
+  `body`; Symphony executes it host-side with the session-bound token, strips `GITHUB_TOKEN` and
+  configured `$VAR` token names from the Codex child, and leaves raw tool access limited by that
+  token's GitHub permissions.
 
 ## Web dashboard
 
@@ -329,10 +313,6 @@ export SYMPHONY_LIVE_GITHUB_REPO=owner/scratch-repo
 export GITHUB_TOKEN=...
 SYMPHONY_RUN_GITHUB_LIVE_E2E=1 mix test test/symphony_elixir/github_live_e2e_test.exs
 ```
-
-It creates one disposable issue, verifies both tracker reads, runs a real local Codex worker,
-requires `github_api` to post an exact comment and close the issue, verifies the workspace file and
-direct GitHub readback, then leaves the test issue closed.
 
 ## FAQ
 
