@@ -538,7 +538,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "terminal issue state stops running agent and cleans workspace" do
+  test "terminal issue state stops running agent before cleaning workspace" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -548,25 +548,36 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-2"
     issue_identifier = "MT-556"
     workspace = Path.join(test_root, issue_identifier)
+    worker_heartbeat = Path.join(test_root, "worker-heartbeat")
+    cleanup_marker = Path.join(test_root, "cleanup-order")
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: test_root,
         tracker_active_states: ["Todo", "In Progress", "In Review"],
-        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
+        hook_before_remove:
+          "before=$(cat \"#{worker_heartbeat}\"); sleep 0.1; after=$(cat \"#{worker_heartbeat}\"); if [ \"$before\" = \"$after\" ]; then printf stopped > \"#{cleanup_marker}\"; else printf alive > \"#{cleanup_marker}\"; fi"
       )
 
-      File.mkdir_p!(test_root)
       File.mkdir_p!(workspace)
+      {:ok, task_supervisor} = Task.Supervisor.start_link()
 
-      agent_pid =
-        spawn(fn ->
-          receive do
-            :stop -> :ok
+      {:ok, agent_pid} =
+        Task.Supervisor.start_child(task_supervisor, fn ->
+          heartbeat = fn heartbeat ->
+            File.write!(worker_heartbeat, Integer.to_string(System.unique_integer([:positive])))
+            Process.sleep(5)
+            heartbeat.(heartbeat)
           end
+
+          heartbeat.(heartbeat)
         end)
 
+      assert eventually_value(fn -> if File.exists?(worker_heartbeat), do: true end)
+
       state = %Orchestrator.State{
+        task_supervisor: task_supervisor,
         running: %{
           issue_id => %{
             pid: agent_pid,
@@ -595,6 +606,7 @@ defmodule SymphonyElixir.CoreTest do
       refute Map.has_key?(updated_state.running, issue_id)
       refute MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
+      assert File.read!(cleanup_marker) == "stopped"
       refute File.exists?(workspace)
     after
       File.rm_rf(test_root)

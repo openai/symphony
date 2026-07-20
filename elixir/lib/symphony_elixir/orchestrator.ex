@@ -560,11 +560,11 @@ defmodule SymphonyElixir.Orchestrator do
         state = record_session_completion_totals(state, running_entry)
         worker_host = Map.get(running_entry, :worker_host)
 
+        stop_running_task(pid, ref, state.task_supervisor)
+
         if cleanup_workspace do
           cleanup_issue_workspace(Map.get(running_entry, :issue, identifier), worker_host)
         end
-
-        stop_running_task(pid, ref, state.task_supervisor)
 
         %{
           state
