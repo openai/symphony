@@ -169,8 +169,6 @@ Notes:
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - For the Linear adapter, `tracker.provider.api_key` reads from `LINEAR_API_KEY` when unset or
   when value is `$LINEAR_API_KEY`. The legacy flat `tracker.api_key` alias behaves the same way.
-- For the GitLab adapter, `tracker.provider.api_key` reads from `GITLAB_PAT` when unset; `$VAR`
-  references are also supported.
 - Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if Codex can read that
   workspace. Use `$VAR`/host-side secret references so Symphony can keep the token out of the
   child environment.
@@ -240,39 +238,13 @@ codex:
   `tracker_payload`, and missing cursors to `tracker_pagination`; logs and tool responses carry the
   human-readable provider detail.
 
-### GitLab adapter profile
+### GitLab adapter
 
-- Config: use `tracker.kind: gitlab` with required `tracker.provider.project_path`, optional
-  `api_url` (default `https://gitlab.com/api/v4`), and `api_key` (defaults to `GITLAB_PAT` and
-  accepts `$VAR`). `project_path` may be a namespaced path such as
-  `group/project` or a quoted numeric project ID. Keep explicit `active_states: ["opened"]` and
-  `terminal_states: ["closed"]` under `tracker`.
-- Scope and paging: candidate reads list issues in the configured project with GitLab offset
-  pagination and locally filter requested `opened`/`closed` states. ID refreshes use project-local
-  issue IIDs, preserve requested order, omit 404s, and fail malformed requested records. Empty
-  state/ID lists return `{:ok, []}` without a GitLab request.
-- Identity and normalization: `issue.id` is the project-local IID string, `issue.identifier` is
-  route-safe `GL-<iid>`, and `issue.native_ref` retains GitLab's global ID, IID, project ID/path,
-  and references map. Description, state, web URL, stable assignee ID, labels, and RFC 3339
-  timestamps map onto the generic issue. Labels are trimmed, lowercased, deduplicated, and blanks
-  are dropped; priority, branch name, and blockers stay unset because GitLab does not expose a
-  matching generic meaning in the issue list.
-- Dispatchability: every valid scoped GitLab issue remains provider-dispatchable, including
-  confidential and nonstandard issue types visible to the configured token. The generic scheduler
-  applies active/terminal states, required labels, claims, retries, and concurrency.
-- Tool: the adapter advertises `gitlab_api`, accepting `method`, a relative GitLab REST `path`, an
-  optional object `query`, and optional JSON `body`. Symphony forwards the body unchanged,
-  executes the request host-side with the session-bound endpoint/token using `PRIVATE-TOKEN`,
-  preserves REST status/body in the tool result, and strips `GITLAB_PAT`, `GITLAB_ACCESS_TOKEN`,
-  plus any configured `$VAR` token name from the Codex child. Project scope applies to scheduler
-  reads, not raw tool calls.
-- Responsibility and errors: `gitlab_api` adds no idempotency, retry, or scope policy; workflows
-  own provider-specific mutations and error handling. Read/config failures use
-  `{:error, :missing_gitlab_api_key}`, `{:error, :missing_gitlab_project_path}`,
-  `{:error, :invalid_gitlab_project_path}`, `{:error, :invalid_gitlab_api_url}`,
-  `{:error, :invalid_gitlab_issue_id}`, `{:error, {:gitlab_api_status, status}}`,
-  `{:error, {:gitlab_api_request, reason}}`, or `{:error, :gitlab_unknown_payload}`. Tool results
-  use the same `success`/JSON `output`/text `contentItems` shape as other provider-native tools.
+- Configure `tracker.kind: gitlab` with `tracker.provider.project_path`, optional `api_url`, and
+  `api_key` (default `GITLAB_PAT`); use `opened` and `closed` tracker states.
+- Symphony reads project issues by IID and exposes route-safe `GL-<iid>` identifiers.
+- `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps GitLab token env vars
+  out of the Codex child.
 
 ## Web dashboard
 
@@ -327,8 +299,7 @@ The live test creates a temporary Linear project and issue, writes a temporary `
 a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
 Linear issue, then marks the project completed so the run remains visible in Linear.
 
-Run the opt-in GitLab live E2E separately when you want Symphony to create and delete a disposable
-issue while exercising a real `codex app-server` session:
+Run the opt-in GitLab live E2E against a disposable project:
 
 ```bash
 cd elixir
@@ -336,10 +307,6 @@ export GITLAB_PAT=...
 export SYMPHONY_LIVE_GITLAB_PROJECT_ID=...
 SYMPHONY_RUN_GITLAB_LIVE_E2E=1 mix test test/symphony_elixir/gitlab_live_e2e_test.exs
 ```
-
-The GitLab live test verifies both tracker reads, a workspace file proving the child did not
-inherit GitLab token variables, real `gitlab_api` note and close calls, direct API readback, and
-issue deletion.
 
 ## FAQ
 
