@@ -57,6 +57,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert String.starts_with?(Path.basename(first_workspace), "MT_Det--")
   end
 
+  test "relative local workspace roots resolve from the workflow directory" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    launcher_dir = Path.join(System.tmp_dir!(), "symphony-elixir-launcher-#{System.unique_integer([:positive])}")
+    original_cwd = File.cwd!()
+
+    try do
+      File.mkdir_p!(launcher_dir)
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: "relative-workspaces")
+      File.cd!(launcher_dir)
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workflow_dir, "relative-workspaces", "MT-REL"]))
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-REL")
+
+      assert workspace == expected_workspace
+      refute String.starts_with?(workspace, launcher_dir <> "/")
+    after
+      File.cd!(original_cwd)
+      File.rm_rf(launcher_dir)
+    end
+  end
+
   test "workspace keys disambiguate identifiers that sanitize to the same path" do
     workspace_root =
       Path.join(
@@ -238,6 +261,38 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                Workspace.create_for_issue("MT-FAIL")
     after
       File.rm_rf(workspace_root)
+    end
+  end
+
+  test "workspace retries after_create after a failed new workspace bootstrap" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-retry-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    attempt_log = Path.join(test_root, "after-create-attempts")
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: """
+        if [ -f "#{attempt_log}" ]; then count=$(wc -l < "#{attempt_log}"); else count=0; fi
+        printf 'attempt\\n' >> "#{attempt_log}"
+        if [ "$count" -eq 0 ]; then printf partial > partial.txt; exit 17; fi
+        printf ready > READY
+        """
+      )
+
+      assert {:error, {:workspace_hook_failed, "after_create", 17, _output}} =
+               Workspace.create_for_issue("MT-FAIL-RETRY")
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-FAIL-RETRY")
+      assert File.read!(Path.join(workspace, "READY")) == "ready"
+      assert String.split(String.trim(File.read!(attempt_log)), "\n") == ["attempt", "attempt"]
+    after
+      File.rm_rf(test_root)
     end
   end
 

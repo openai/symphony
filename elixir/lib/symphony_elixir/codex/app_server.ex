@@ -151,7 +151,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Config.local_workspace_root()
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),

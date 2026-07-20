@@ -20,9 +20,15 @@ defmodule SymphonyElixir.Workspace do
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
-           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-        {:ok, workspace}
+           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host) do
+        case maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
+          :ok ->
+            {:ok, workspace}
+
+          {:error, _reason} = error ->
+            cleanup_failed_new_workspace(workspace, created?, worker_host)
+            error
+        end
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
@@ -213,7 +219,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
-    Config.settings!().workspace.root
+    Config.local_workspace_root()
     |> Path.join(safe_id)
     |> PathSafety.canonicalize()
   end
@@ -267,6 +273,30 @@ defmodule SymphonyElixir.Workspace do
 
       false ->
         :ok
+    end
+  end
+
+  defp cleanup_failed_new_workspace(_workspace, false, _worker_host), do: :ok
+
+  defp cleanup_failed_new_workspace(workspace, true, nil) do
+    case File.rm_rf(workspace) do
+      {:ok, _removed} ->
+        :ok
+
+      {:error, reason, path} ->
+        Logger.warning("Failed to remove partial workspace path=#{path} reason=#{inspect(reason)}")
+    end
+  end
+
+  defp cleanup_failed_new_workspace(workspace, true, worker_host) when is_binary(worker_host) do
+    script = [remote_shell_assign("workspace", workspace), "rm -rf \"$workspace\""] |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} ->
+        :ok
+
+      result ->
+        Logger.warning("Failed to remove partial workspace worker_host=#{worker_host_for_log(worker_host)} result=#{inspect(result)}")
     end
   end
 
@@ -402,7 +432,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Config.local_workspace_root()
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
