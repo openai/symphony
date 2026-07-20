@@ -872,6 +872,54 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(updated_state.retry_attempts, issue_id)
   end
 
+  test "retry dispatches the issue from its successful refresh" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-retry-refresh-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "retry-refreshed-issue"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        hook_before_run: "exit 1"
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+      {:ok, task_supervisor} = Task.Supervisor.start_link()
+
+      state = %Orchestrator.State{
+        task_supervisor: task_supervisor,
+        claimed: MapSet.new([issue_id]),
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-566",
+        title: "Retry refreshed issue",
+        state: "In Progress",
+        dispatchable: true,
+        labels: []
+      }
+
+      updated_state =
+        Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 1, %{
+          identifier: issue.identifier,
+          error: "agent exited"
+        })
+
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert Map.has_key?(updated_state.running, issue_id)
+      refute Map.has_key?(updated_state.retry_attempts, issue_id)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner does not continue after a required label is removed" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
 
