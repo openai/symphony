@@ -173,6 +173,42 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "recorded workspace removal rejects symlink escapes before hooks" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-recorded-workspace-symlink-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      recorded_root = Path.join(test_root, "recorded-workspaces")
+      current_root = Path.join(test_root, "current-workspaces")
+      outside_root = Path.join(test_root, "outside")
+      recorded_workspace = Path.join(recorded_root, "MT-SYM")
+      hook_marker = Path.join(test_root, "before-remove-ran")
+
+      File.mkdir_p!(recorded_root)
+      File.mkdir_p!(outside_root)
+      File.ln_s!(outside_root, recorded_workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: current_root,
+        hook_before_remove: "touch \"#{hook_marker}\""
+      )
+
+      assert {:ok, canonical_recorded_root} =
+               SymphonyElixir.PathSafety.canonicalize(recorded_root)
+
+      assert {:error, {:workspace_symlink_escape, ^recorded_workspace, ^canonical_recorded_root}, ""} =
+               Workspace.remove_recorded(recorded_workspace, nil)
+
+      refute File.exists?(hook_marker)
+      assert File.exists?(outside_root)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
     test_root =
       Path.join(
