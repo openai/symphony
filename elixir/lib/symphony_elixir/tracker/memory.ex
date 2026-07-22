@@ -5,12 +5,7 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.Linear.Issue
-
-  @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_candidate_issues do
-    {:ok, issue_entries()}
-  end
+  alias SymphonyElixir.Tracker.Issue
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) do
@@ -25,8 +20,8 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
-  @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issue_states_by_ids(issue_ids) do
+  @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(issue_ids) do
     wanted_ids = MapSet.new(issue_ids)
 
     {:ok,
@@ -35,17 +30,8 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
-  @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
-  def create_comment(issue_id, body) do
-    send_event({:memory_tracker_comment, issue_id, body})
-    :ok
-  end
-
-  @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
-  def update_issue_state(issue_id, state_name) do
-    send_event({:memory_tracker_state_update, issue_id, state_name})
-    :ok
-  end
+  @spec secret_environment_names(map()) :: [String.t()]
+  def secret_environment_names(_tracker_settings), do: []
 
   defp configured_issues do
     Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
@@ -53,13 +39,6 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   defp issue_entries do
     Enum.filter(configured_issues(), &match?(%Issue{}, &1))
-  end
-
-  defp send_event(message) do
-    case Application.get_env(:symphony_elixir, :memory_tracker_recipient) do
-      pid when is_pid(pid) -> send(pid, message)
-      _ -> :ok
-    end
   end
 
   defp normalize_state(state) when is_binary(state) do

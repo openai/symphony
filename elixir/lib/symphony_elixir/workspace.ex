@@ -16,13 +16,19 @@ defmodule SymphonyElixir.Workspace do
     issue_context = issue_context(issue_or_identifier)
 
     try do
-      safe_id = safe_identifier(issue_context.issue_identifier)
+      safe_id = workspace_key(issue_or_identifier)
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
-           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-        {:ok, workspace}
+           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host) do
+        case maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
+          :ok ->
+            {:ok, workspace}
+
+          {:error, _reason} = error ->
+            cleanup_failed_new_workspace(workspace, created?, worker_host)
+            error
+        end
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
@@ -93,8 +99,7 @@ defmodule SymphonyElixir.Workspace do
       true ->
         case validate_workspace_path(workspace, nil) do
           :ok ->
-            maybe_run_before_remove_hook(workspace, nil)
-            File.rm_rf(workspace)
+            remove_local_workspace(workspace)
 
           {:error, reason} ->
             {:error, reason, ""}
@@ -127,14 +132,66 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @doc false
+  @spec remove_recorded(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
+  def remove_recorded(workspace, nil) when is_binary(workspace) do
+    if Path.type(workspace) == :absolute do
+      case validate_recorded_workspace_path(workspace) do
+        :ok ->
+          remove_local_workspace(workspace)
+
+        {:error, reason} ->
+          {:error, reason, ""}
+      end
+    else
+      {:error, {:workspace_path_unreadable, workspace, :not_absolute}, ""}
+    end
+  end
+
+  def remove_recorded(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
+    remove(workspace, worker_host)
+  end
+
+  def remove_recorded(workspace, _worker_host) do
+    {:error, {:workspace_path_unreadable, workspace, :invalid}, ""}
+  end
+
+  defp remove_local_workspace(workspace) do
+    maybe_run_before_remove_hook(workspace, nil)
+    File.rm_rf(workspace)
+  end
+
   @spec remove_issue_workspaces(term()) :: :ok
   def remove_issue_workspaces(identifier), do: remove_issue_workspaces(identifier, nil)
 
   @spec remove_issue_workspaces(term(), worker_host()) :: :ok
-  def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
-    safe_id = safe_identifier(identifier)
+  def remove_issue_workspaces(%{id: _issue_id, identifier: _identifier} = issue, worker_host)
+      when is_binary(worker_host) do
+    case workspace_path_for_issue(workspace_key(issue), worker_host) do
+      {:ok, workspace} -> remove(workspace, worker_host)
+      {:error, _reason} -> :ok
+    end
 
-    case workspace_path_for_issue(safe_id, worker_host) do
+    :ok
+  end
+
+  def remove_issue_workspaces(%{id: _issue_id, identifier: _identifier} = issue, nil) do
+    case Config.settings!().worker.ssh_hosts do
+      [] ->
+        case workspace_path_for_issue(workspace_key(issue), nil) do
+          {:ok, workspace} -> remove(workspace, nil)
+          {:error, _reason} -> :ok
+        end
+
+      worker_hosts ->
+        Enum.each(worker_hosts, &remove_issue_workspaces(issue, &1))
+    end
+
+    :ok
+  end
+
+  def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
+    case workspace_path_for_issue(workspace_key(identifier), worker_host) do
       {:ok, workspace} -> remove(workspace, worker_host)
       {:error, _reason} -> :ok
     end
@@ -143,11 +200,9 @@ defmodule SymphonyElixir.Workspace do
   end
 
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
-    safe_id = safe_identifier(identifier)
-
     case Config.settings!().worker.ssh_hosts do
       [] ->
-        case workspace_path_for_issue(safe_id, nil) do
+        case workspace_path_for_issue(workspace_key(identifier), nil) do
           {:ok, workspace} -> remove(workspace, nil)
           {:error, _reason} -> :ok
         end
@@ -159,9 +214,7 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
-  def remove_issue_workspaces(_identifier, _worker_host) do
-    :ok
-  end
+  def remove_issue_workspaces(_identifier, _worker_host), do: :ok
 
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
           :ok | {:error, term()}
@@ -194,7 +247,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
-    Config.settings!().workspace.root
+    Config.local_workspace_root()
     |> Path.join(safe_id)
     |> PathSafety.canonicalize()
   end
@@ -203,8 +256,34 @@ defmodule SymphonyElixir.Workspace do
     {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
   end
 
-  defp safe_identifier(identifier) do
-    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  @doc """
+  Returns the collision-safe directory name for an issue identifier.
+
+  The hash is derived from the original identifier so callers that only know the identifier can
+  derive the same key as callers holding a full tracker issue.
+  """
+  @spec workspace_key(map() | String.t() | nil) :: String.t()
+  def workspace_key(%{identifier: identifier}), do: workspace_key(identifier)
+
+  def workspace_key(identifier) when is_binary(identifier) do
+    safe_identifier = safe_identifier(identifier)
+
+    if safe_identifier == identifier do
+      safe_identifier
+    else
+      "#{safe_identifier}--#{short_identifier_hash(identifier)}"
+    end
+  end
+
+  def workspace_key(_identifier), do: "issue"
+
+  defp safe_identifier(identifier) when is_binary(identifier),
+    do: String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
+
+  defp short_identifier_hash(identifier) do
+    :crypto.hash(:sha256, identifier)
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
@@ -222,6 +301,30 @@ defmodule SymphonyElixir.Workspace do
 
       false ->
         :ok
+    end
+  end
+
+  defp cleanup_failed_new_workspace(_workspace, false, _worker_host), do: :ok
+
+  defp cleanup_failed_new_workspace(workspace, true, nil) do
+    case File.rm_rf(workspace) do
+      {:ok, _removed} ->
+        :ok
+
+      {:error, reason, path} ->
+        Logger.warning("Failed to remove partial workspace path=#{path} reason=#{inspect(reason)}")
+    end
+  end
+
+  defp cleanup_failed_new_workspace(workspace, true, worker_host) when is_binary(worker_host) do
+    script = [remote_shell_assign("workspace", workspace), "rm -rf \"$workspace\""] |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} ->
+        :ok
+
+      result ->
+        Logger.warning("Failed to remove partial workspace worker_host=#{worker_host_for_log(worker_host)} result=#{inspect(result)}")
     end
   end
 
@@ -356,8 +459,31 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
+    validate_local_workspace_path(workspace, Config.local_workspace_root())
+  end
+
+  defp validate_workspace_path(workspace, worker_host)
+       when is_binary(workspace) and is_binary(worker_host) do
+    cond do
+      String.trim(workspace) == "" ->
+        {:error, {:workspace_path_unreadable, workspace, :empty}}
+
+      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
+        {:error, {:workspace_path_unreadable, workspace, :invalid_characters}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_recorded_workspace_path(workspace) when is_binary(workspace) do
+    validate_local_workspace_path(workspace, Path.dirname(workspace))
+  end
+
+  defp validate_local_workspace_path(workspace, workspace_root)
+       when is_binary(workspace) and is_binary(workspace_root) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Path.expand(workspace_root)
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -383,27 +509,13 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp validate_workspace_path(workspace, worker_host)
-       when is_binary(workspace) and is_binary(worker_host) do
-    cond do
-      String.trim(workspace) == "" ->
-        {:error, {:workspace_path_unreadable, workspace, :empty}}
-
-      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
-        {:error, {:workspace_path_unreadable, workspace, :invalid_characters}}
-
-      true ->
-        :ok
-    end
-  end
-
   defp remote_shell_assign(variable_name, raw_path)
        when is_binary(variable_name) and is_binary(raw_path) do
     [
       "#{variable_name}=#{shell_escape(raw_path)}",
       "case \"$#{variable_name}\" in",
       "  '~') #{variable_name}=\"$HOME\" ;;",
-      "  '~/'*) " <> variable_name <> "=\"$HOME/${" <> variable_name <> "#~/}\" ;;",
+      "  '~/'*) " <> variable_name <> "=\"$HOME/${" <> variable_name <> "#\\~/}\" ;;",
       "esac"
     ]
     |> Enum.join("\n")

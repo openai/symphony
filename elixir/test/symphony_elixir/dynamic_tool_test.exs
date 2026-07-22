@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.Codex.DynamicToolTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Codex.DynamicTool, as: BoundDynamicTool
+  alias SymphonyElixir.Linear.AgentTool, as: DynamicTool
 
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
@@ -23,7 +24,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
-    response = DynamicTool.execute("not_a_real_tool", %{})
+    response = DynamicTool.execute("not_a_real_tool", %{}, [])
 
     assert response["success"] == false
 
@@ -40,6 +41,38 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "bound tools keep the adapter and auth snapshot from session startup" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_api_token: "session-token",
+      tracker_project_slug: "session-project"
+    )
+
+    binding = BoundDynamicTool.bind()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    assert BoundDynamicTool.bind().tool_specs == []
+
+    test_pid = self()
+
+    response =
+      BoundDynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "query Viewer { viewer { id } }"},
+        binding,
+        linear_client: fn query, variables, opts ->
+          send(test_pid, {:bound_linear_client_called, query, variables, opts})
+          {:ok, %{"data" => %{"viewer" => %{"id" => "usr_bound"}}}}
+        end
+      )
+
+    assert_received {:bound_linear_client_called, "query Viewer { viewer { id } }", %{}, [tracker_settings: tracker_settings]}
+
+    assert tracker_settings.api_key == "session-token"
+    assert tracker_settings.project_slug == "session-project"
+    assert response["success"] == true
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do
@@ -123,7 +156,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   test "linear_graphql rejects blank raw query strings even when using the default client" do
-    response = DynamicTool.execute("linear_graphql", "   ")
+    response = DynamicTool.execute("linear_graphql", "   ", [])
 
     assert response["success"] == false
 
@@ -245,7 +278,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert Jason.decode!(missing_token["output"]) == %{
              "error" => %{
-               "message" => "Symphony is missing Linear auth. Set `linear.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
+               "message" => "Symphony is missing Linear auth. Set `tracker.provider.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
              }
            }
 

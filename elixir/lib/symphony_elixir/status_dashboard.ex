@@ -394,8 +394,9 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_project_link_lines do
     project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
+      case Config.settings!().tracker do
+        %{kind: "linear", project_slug: project_slug}
+        when is_binary(project_slug) and project_slug != "" ->
           colorize(linear_project_url(project_slug), @ansi_cyan)
 
         _ ->
@@ -1122,18 +1123,6 @@ defmodule SymphonyElixir.StatusDashboard do
       end
 
     if is_binary(decision), do: "#{base}: #{decision}", else: base
-  end
-
-  defp humanize_codex_event(:tool_input_auto_answered, message, payload) do
-    answer = map_value(message, ["answer", :answer])
-
-    base =
-      case humanize_codex_method("item/tool/requestUserInput", payload) do
-        nil -> "tool input auto-answered"
-        text -> "#{text} (auto-answered)"
-      end
-
-    if is_binary(answer), do: "#{base}: #{inline_text(answer)}", else: base
   end
 
   defp humanize_codex_event(:tool_call_completed, _message, payload),

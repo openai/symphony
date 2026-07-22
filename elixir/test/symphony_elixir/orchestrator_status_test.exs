@@ -90,6 +90,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
+    assert snapshot_entry.issue_url == "https://example.org/issues/MT-188"
     assert snapshot_entry.session_id == "thread-live-turn-live"
     assert snapshot_entry.turn_count == 1
     assert snapshot_entry.last_codex_timestamp == now
@@ -728,6 +729,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       timer_ref: nil,
       due_at_ms: System.monotonic_time(:millisecond) + 5_000,
       identifier: "MT-500",
+      issue_url: "https://example.org/issues/MT-500",
       error: "agent exited: :boom"
     }
 
@@ -744,6 +746,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                attempt: 2,
                due_in_ms: due_in_ms,
                identifier: "MT-500",
+               issue_url: "https://example.org/issues/MT-500",
                error: "agent exited: :boom"
              }
            ] = snapshot.retrying
@@ -798,7 +801,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator triggers an immediate poll cycle shortly after startup" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       poll_interval_ms: 5_000
     )
 
@@ -850,7 +853,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       poll_interval_ms: 50
     )
 
@@ -899,7 +902,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       codex_stall_timeout_ms: 1_000
     )
 
@@ -927,13 +930,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       pid: worker_pid,
       ref: make_ref(),
       identifier: "MT-STALL",
-      issue: %Issue{id: issue_id, identifier: "MT-STALL", state: "In Progress"},
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-STALL",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-STALL"
+      },
       session_id: "thread-stall-turn-stall",
       last_codex_message: nil,
       last_codex_timestamp: stale_activity_at,
       last_codex_event: :notification,
       started_at: stale_activity_at
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
 
     :sys.replace_state(pid, fn _ ->
       initial_state
@@ -952,6 +962,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              attempt: 1,
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
+             issue_url: "https://example.org/issues/MT-STALL",
              error: "stalled for " <> _
            } = state.retry_attempts[issue_id]
 
@@ -959,6 +970,204 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
     assert remaining_ms >= 9_500
     assert remaining_ms <= 10_500
+  end
+
+  test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_stall_timeout_ms: 1_000
+    )
+
+    issue_id = "issue-mcp-elicitation-stall"
+    orchestrator_name = Module.concat(__MODULE__, :McpElicitationBlockOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: "MT-MCP",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-MCP",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-MCP",
+        dispatchable: true
+      },
+      worker_host: "dm-dev2",
+      workspace_path: "/workspaces/MT-MCP",
+      session_id: "thread-mcp-turn-mcp",
+      last_codex_message: %{
+        event: :notification,
+        message: %{"method" => "mcpServer/elicitation/request"},
+        timestamp: stale_activity_at
+      },
+      last_codex_timestamp: stale_activity_at,
+      last_codex_event: :notification,
+      started_at: stale_activity_at
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
+    refute Process.alive?(worker_pid)
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-MCP",
+             error: "codex MCP elicitation requires operator input",
+             worker_host: "dm-dev2",
+             workspace_path: "/workspaces/MT-MCP"
+           } = state.blocked[issue_id]
+
+    assert %{
+             blocked: [
+               %{
+                 identifier: "MT-MCP",
+                 issue_url: "https://example.org/issues/MT-MCP",
+                 error: "codex MCP elicitation requires operator input"
+               }
+             ]
+           } =
+             Orchestrator.snapshot(orchestrator_name, 1_000)
+  end
+
+  test "orchestrator blocks failed workers after app-server reports input required" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    issue_id = "issue-input-required"
+    orchestrator_name = Module.concat(__MODULE__, :InputRequiredBlockOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    ref = make_ref()
+    started_at = DateTime.utc_now()
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-INPUT",
+      issue: %Issue{id: issue_id, identifier: "MT-INPUT", state: "In Progress", dispatchable: true},
+      session_id: "thread-input-turn-input",
+      last_codex_message: %{
+        event: :turn_input_required,
+        message: %{"method" => "mcpServer/elicitation/request"},
+        timestamp: started_at
+      },
+      last_codex_timestamp: started_at,
+      last_codex_event: :turn_input_required,
+      started_at: started_at
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), {:shutdown, :input_required}})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-INPUT",
+             error: "codex turn requires operator input"
+           } = state.blocked[issue_id]
+  end
+
+  test "orchestrator blocks normal worker exits after input required completion" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    issue_id = "issue-input-required-normal"
+    orchestrator_name = Module.concat(__MODULE__, :InputRequiredNormalBlockOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    ref = make_ref()
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-INPUT-NORMAL",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-INPUT-NORMAL",
+        state: "In Progress",
+        dispatchable: true
+      },
+      session_id: "thread-input-normal",
+      completion: %{outcome: :input_required},
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute MapSet.member?(state.completed, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-INPUT-NORMAL",
+             error: "codex turn requires operator input"
+           } = state.blocked[issue_id]
   end
 
   test "status dashboard renders offline marker to terminal" do
@@ -1127,19 +1336,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "status dashboard coalesces rapid updates to one render per interval" do
     dashboard_name = Module.concat(__MODULE__, :RenderDashboard)
     parent = self()
-    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+    runtime_pid = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
 
     on_exit(fn ->
-      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
-        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+      if is_nil(Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)) do
+        case Supervisor.restart_child(
+               SymphonyElixir.Supervisor,
+               SymphonyElixir.AgentRuntimeSupervisor
+             ) do
           {:ok, _pid} -> :ok
           {:error, {:already_started, _pid}} -> :ok
         end
       end
     end)
 
-    if is_pid(orchestrator_pid) do
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+    if is_pid(runtime_pid) do
+      assert :ok =
+               Supervisor.terminate_child(
+                 SymphonyElixir.Supervisor,
+                 SymphonyElixir.AgentRuntimeSupervisor
+               )
     end
 
     {:ok, pid} =
@@ -1481,23 +1697,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     humanized = StatusDashboard.humanize_codex_message(message)
     assert humanized =~ "command approval requested"
     assert humanized =~ "auto-approved"
-  end
-
-  test "status dashboard formats auto-answered tool input updates from codex" do
-    message = %{
-      event: :tool_input_auto_answered,
-      message: %{
-        payload: %{
-          "method" => "item/tool/requestUserInput",
-          "params" => %{"question" => "Continue?"}
-        },
-        answer: "This is a non-interactive session. Operator input is unavailable."
-      }
-    }
-
-    humanized = StatusDashboard.humanize_codex_message(message)
-    assert humanized =~ "tool requires user input"
-    assert humanized =~ "auto-answered"
   end
 
   test "status dashboard enriches wrapper reasoning and message streaming events with payload context" do

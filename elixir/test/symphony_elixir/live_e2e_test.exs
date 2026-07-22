@@ -8,7 +8,6 @@ defmodule SymphonyElixir.LiveE2ETest do
   @moduletag timeout: 300_000
 
   @default_team_key "SYME2E"
-  @default_docker_auth_json Path.join(System.user_home!(), ".codex/auth.json")
   @docker_worker_count 2
   @docker_support_dir Path.expand("../support/live_e2e_docker", __DIR__)
   @docker_compose_file Path.join(@docker_support_dir, "docker-compose.yml")
@@ -443,13 +442,17 @@ defmodule SymphonyElixir.LiveE2ETest do
     worker_setup = live_worker_setup!(backend, run_id, test_root)
     team_key = System.get_env("SYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
     original_workflow_path = Workflow.workflow_file_path()
-    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+    runtime_pid = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
 
     File.mkdir_p!(workflow_root)
 
     try do
-      if is_pid(orchestrator_pid) do
-        assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+      if is_pid(runtime_pid) do
+        assert :ok =
+                 Supervisor.terminate_child(
+                   SymphonyElixir.Supervisor,
+                   SymphonyElixir.AgentRuntimeSupervisor
+                 )
       end
 
       Workflow.set_workflow_file_path(workflow_file)
@@ -475,43 +478,47 @@ defmodule SymphonyElixir.LiveE2ETest do
           "Symphony Live E2E #{backend} #{System.unique_integer([:positive])}"
         )
 
-      issue =
-        create_issue!(
-          team["id"],
-          project["id"],
-          active_state["id"],
-          "Symphony live e2e #{backend} issue for #{project["name"]}"
+      try do
+        issue =
+          create_issue!(
+            team["id"],
+            project["id"],
+            active_state["id"],
+            "Symphony live e2e #{backend} issue for #{project["name"]}"
+          )
+
+        write_workflow_file!(workflow_file,
+          tracker_api_token: "$LINEAR_API_KEY",
+          tracker_project_slug: project["slugId"],
+          tracker_active_states: active_state_names(team),
+          tracker_terminal_states: terminal_states,
+          workspace_root: worker_setup.workspace_root,
+          worker_ssh_hosts: worker_setup.ssh_worker_hosts,
+          codex_command: worker_setup.codex_command,
+          codex_approval_policy: "never",
+          codex_turn_sandbox_policy: Map.get(worker_setup, :codex_turn_sandbox_policy),
+          codex_read_timeout_ms: 60_000,
+          codex_turn_timeout_ms: 600_000,
+          codex_stall_timeout_ms: 600_000,
+          observability_enabled: false,
+          prompt: live_prompt(project["slugId"])
         )
 
-      write_workflow_file!(workflow_file,
-        tracker_api_token: "$LINEAR_API_KEY",
-        tracker_project_slug: project["slugId"],
-        tracker_active_states: active_state_names(team),
-        tracker_terminal_states: terminal_states,
-        workspace_root: worker_setup.workspace_root,
-        worker_ssh_hosts: worker_setup.ssh_worker_hosts,
-        codex_command: worker_setup.codex_command,
-        codex_approval_policy: "never",
-        codex_turn_timeout_ms: 600_000,
-        codex_stall_timeout_ms: 600_000,
-        observability_enabled: false,
-        prompt: live_prompt(project["slugId"])
-      )
+        assert :ok = AgentRunner.run(issue, self(), max_turns: 3)
 
-      assert :ok = AgentRunner.run(issue, self(), max_turns: 3)
+        runtime_info = receive_runtime_info!(issue.id)
 
-      runtime_info = receive_runtime_info!(issue.id)
+        assert read_worker_result!(runtime_info, @result_file) ==
+                 expected_result(issue.identifier, project["slugId"])
 
-      assert read_worker_result!(runtime_info, @result_file) ==
-               expected_result(issue.identifier, project["slugId"])
-
-      issue_snapshot = fetch_issue_details!(issue.id)
-      assert issue_completed?(issue_snapshot)
-      assert issue_has_comment?(issue_snapshot, expected_comment(issue.identifier, project["slugId"]))
-
-      assert :ok = complete_project(project["id"], completed_project_status["id"])
+        issue_snapshot = fetch_issue_details!(issue.id)
+        assert issue_completed?(issue_snapshot)
+        assert issue_has_comment?(issue_snapshot, expected_comment(issue.identifier, project["slugId"]))
+      after
+        assert :ok = complete_project(project["id"], completed_project_status["id"])
+      end
     after
-      restart_orchestrator_if_needed()
+      restart_agent_runtime_if_needed()
       cleanup_live_worker_setup(worker_setup)
       Workflow.set_workflow_file_path(original_workflow_path)
       File.rm_rf(test_root)
@@ -519,9 +526,11 @@ defmodule SymphonyElixir.LiveE2ETest do
   end
 
   defp live_worker_setup!(:local, _run_id, test_root) when is_binary(test_root) do
+    codex_home = isolated_codex_home!(test_root)
+
     %{
       cleanup: fn -> :ok end,
-      codex_command: "codex app-server",
+      codex_command: "env CODEX_HOME=#{shell_escape(codex_home)} codex app-server",
       ssh_worker_hosts: [],
       workspace_root: Path.join(test_root, "workspaces")
     }
@@ -537,15 +546,40 @@ defmodule SymphonyElixir.LiveE2ETest do
     end
   end
 
+  defp isolated_codex_home!(test_root) when is_binary(test_root) do
+    codex_home = Path.join(test_root, "codex-home")
+    auth_json_path = Path.join(codex_home, "auth.json")
+
+    File.mkdir_p!(codex_home)
+    File.cp!(source_codex_auth_json!(), auth_json_path)
+    File.chmod!(auth_json_path, 0o600)
+
+    codex_home
+  end
+
+  defp source_codex_auth_json! do
+    codex_home = System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
+    auth_json_path = Path.join(codex_home, "auth.json")
+
+    if File.regular?(auth_json_path) do
+      auth_json_path
+    else
+      flunk("live e2e requires Codex auth at #{auth_json_path}")
+    end
+  end
+
   defp cleanup_live_worker_setup(%{cleanup: cleanup}) when is_function(cleanup, 0) do
     cleanup.()
   end
 
   defp cleanup_live_worker_setup(_worker_setup), do: :ok
 
-  defp restart_orchestrator_if_needed do
-    if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
-      case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+  defp restart_agent_runtime_if_needed do
+    if is_nil(Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)) do
+      case Supervisor.restart_child(
+             SymphonyElixir.Supervisor,
+             SymphonyElixir.AgentRuntimeSupervisor
+           ) do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end
@@ -569,7 +603,7 @@ defmodule SymphonyElixir.LiveE2ETest do
     ssh_root = Path.join(test_root, "live-docker-ssh")
     key_path = Path.join(ssh_root, "id_ed25519")
     config_path = Path.join(ssh_root, "config")
-    auth_json_path = @default_docker_auth_json
+    auth_json_path = source_codex_auth_json!()
     worker_ports = reserve_tcp_ports(@docker_worker_count)
     worker_hosts = Enum.map(worker_ports, &"localhost:#{&1}")
     project_name = docker_project_name(run_id)
@@ -598,6 +632,7 @@ defmodule SymphonyElixir.LiveE2ETest do
             base_cleanup.()
           end,
           codex_command: "codex app-server",
+          codex_turn_sandbox_policy: %{type: "dangerFullAccess"},
           ssh_worker_hosts: worker_hosts,
           workspace_root: remote_workspace_root
         }

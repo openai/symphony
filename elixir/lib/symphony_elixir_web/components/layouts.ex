@@ -7,7 +7,11 @@ defmodule SymphonyElixirWeb.Layouts do
 
   @spec root(map()) :: Phoenix.LiveView.Rendered.t()
   def root(assigns) do
-    assigns = assign(assigns, :csrf_token, Plug.CSRFProtection.get_csrf_token())
+    assigns =
+      assigns
+      |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
+      |> assign(:dashboard_css_url, SymphonyElixirWeb.StaticAssets.dashboard_css_url())
+      |> assign(:favicon_url, SymphonyElixirWeb.StaticAssets.favicon_url())
 
     ~H"""
     <!DOCTYPE html>
@@ -17,6 +21,7 @@ defmodule SymphonyElixirWeb.Layouts do
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="csrf-token" content={@csrf_token} />
         <title>Symphony Observability</title>
+        <link rel="icon" type="image/png" sizes="128x128" href={@favicon_url} />
         <script defer src="/vendor/phoenix_html/phoenix_html.js"></script>
         <script defer src="/vendor/phoenix/phoenix.js"></script>
         <script defer src="/vendor/phoenix_live_view/phoenix_live_view.js"></script>
@@ -36,7 +41,7 @@ defmodule SymphonyElixirWeb.Layouts do
             window.liveSocket = liveSocket;
           });
         </script>
-        <link rel="stylesheet" href="/dashboard.css" />
+        <link rel="stylesheet" href={@dashboard_css_url} />
       </head>
       <body>
         {@inner_content}

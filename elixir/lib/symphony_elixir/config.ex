@@ -3,11 +3,11 @@ defmodule SymphonyElixir.Config do
   Runtime configuration loaded from `WORKFLOW.md`.
   """
 
-  alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Workflow
+  alias SymphonyElixir.{Config.Schema, Tracker}
+  alias SymphonyElixir.{Workflow, WorkflowStore}
 
   @default_prompt_template """
-  You are working on a Linear issue.
+  You are working on an issue from the configured tracker.
 
   Identifier: {{ issue.identifier }}
   Title: {{ issue.title }}
@@ -28,13 +28,7 @@ defmodule SymphonyElixir.Config do
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
-    case Workflow.current() do
-      {:ok, %{config: config}} when is_map(config) ->
-        Schema.parse(config)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    WorkflowStore.settings()
   end
 
   @spec settings!() :: Schema.t()
@@ -91,11 +85,16 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @doc false
+  @spec local_workspace_root() :: Path.t()
+  def local_workspace_root do
+    workflow_dir = Workflow.workflow_file_path() |> Path.expand() |> Path.dirname()
+    Path.expand(settings!().workspace.root, workflow_dir)
+  end
+
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
-    with {:ok, settings} <- settings() do
-      validate_semantics(settings)
-    end
+    WorkflowStore.force_reload()
   end
 
   @spec codex_runtime_settings(Path.t() | nil, keyword()) ::
@@ -114,22 +113,13 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp validate_semantics(settings) do
-    cond do
-      is_nil(settings.tracker.kind) ->
-        {:error, :missing_tracker_kind}
-
-      settings.tracker.kind not in ["linear", "memory"] ->
-        {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      true ->
-        :ok
+  @doc false
+  @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
+  def validate_settings(settings) do
+    if is_nil(settings.tracker.kind) do
+      {:error, :missing_tracker_kind}
+    else
+      Tracker.validate_config(settings.tracker)
     end
   end
 

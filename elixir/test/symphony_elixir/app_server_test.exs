@@ -76,6 +76,95 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "turn timeout resets on stream updates and fires after silence" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-turn-timeout-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-TIMEOUT")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-timeout"}}}' ;;
+          4)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-timeout"}}}'
+            sleep 0.15
+            printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"one"}}}'
+            sleep 0.15
+            printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"two"}}}'
+            sleep 0.15
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_timeout_ms: 250
+      )
+
+      issue = %Issue{
+        id: "issue-turn-timeout",
+        identifier: "MT-TIMEOUT",
+        title: "Stream timeout",
+        description: "Keep active streams alive",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-TIMEOUT",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "stream updates", issue)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-silent"}}}' ;;
+          4)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-silent"}}}'
+            sleep 0.4
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_timeout_ms: 100
+      )
+
+      assert {:error, :turn_timeout} = AppServer.run(workspace, "silent turn", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(
@@ -257,6 +346,71 @@ defmodule SymphonyElixir.AppServerTest do
                AppServer.run(workspace, "Needs input", issue)
 
       assert payload["method"] == "turn/input_required"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server treats MCP elicitation requests as hard input blockers" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-mcp-elicitation-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-188")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-188"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-188"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"mcpServer/elicitation/request","params":{"message":"Need operator input"}}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-mcp-elicitation",
+        identifier: "MT-188",
+        title: "MCP elicitation",
+        description: "Cannot satisfy MCP input",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-188",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:turn_input_required, payload}} =
+               AppServer.run(workspace, "Needs MCP input", issue)
+
+      assert payload["method"] == "mcpServer/elicitation/request"
     after
       File.rm_rf(test_root)
     end
@@ -561,7 +715,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server sends a generic non-interactive answer for freeform tool input prompts" do
+  test "app server blocks freeform tool input prompts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -622,22 +776,16 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      on_message = fn message -> send(self(), {:app_server_message, message}) end
+      assert {:error, {:turn_input_required, payload}} =
+               AppServer.run(workspace, "Handle generic tool input", issue)
 
-      assert {:ok, _result} =
-               AppServer.run(workspace, "Handle generic tool input", issue, on_message: on_message)
-
-      assert_received {:app_server_message,
-                       %{
-                         event: :tool_input_auto_answered,
-                         answer: "This is a non-interactive session. Operator input is unavailable."
-                       }}
+      assert payload["method"] == "item/tool/requestUserInput"
     after
       File.rm_rf(test_root)
     end
   end
 
-  test "app server sends a generic non-interactive answer for option-based tool input prompts" do
+  test "app server blocks option-based tool input prompts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -648,27 +796,13 @@ defmodule SymphonyElixir.AppServerTest do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-719")
       codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-tool-user-input-options.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-options.trace}"
       count=0
-      while IFS= read -r line; do
+      while IFS= read -r _line; do
         count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
 
         case \"$count\" in
           1)
@@ -681,7 +815,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-719\"}}}'
-            printf '%s\\n' '{\"id\":112,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-719\",\"questions\":[{\"header\":\"Choose an action\",\"id\":\"options-719\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Use the default behavior.\",\"label\":\"Use default\"},{\"description\":\"Skip this step.\",\"label\":\"Skip\"}],\"question\":\"How should I proceed?\"}],\"threadId\":\"thread-719\",\"turnId\":\"turn-719\"}}'
+            printf '%s\\n' '{\"id\":112,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-719\",\"questions\":[{\"header\":\"Choose an action\",\"id\":\"options-719\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Proceed with the requested action.\",\"label\":\"Allow\"},{\"description\":\"Do not proceed.\",\"label\":\"Deny\"}],\"question\":\"How should I proceed?\"}],\"threadId\":\"thread-719\",\"turnId\":\"turn-719\"}}'
             ;;
           5)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -698,40 +832,24 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
       )
 
       issue = %Issue{
         id: "issue-tool-user-input-options",
         identifier: "MT-719",
-        title: "Option based tool input answer",
-        description: "Ensure option prompts receive a generic non-interactive answer",
+        title: "Option based tool input block",
+        description: "Ensure option prompts require operator input",
         state: "In Progress",
         url: "https://example.org/issues/MT-719",
         labels: ["backend"]
       }
 
-      assert {:ok, _result} =
+      assert {:error, {:turn_input_required, payload}} =
                AppServer.run(workspace, "Handle option based tool input", issue)
 
-      trace = File.read!(trace_file)
-      lines = String.split(trace, "\n", trim: true)
-
-      assert Enum.any?(lines, fn line ->
-               if String.starts_with?(line, "JSON:") do
-                 payload =
-                   line
-                   |> String.trim_leading("JSON:")
-                   |> Jason.decode!()
-
-                 payload["id"] == 112 and
-                   get_in(payload, ["result", "answers", "options-719", "answers"]) == [
-                     "This is a non-interactive session. Operator input is unavailable."
-                   ]
-               else
-                 false
-               end
-             end)
+      assert payload["method"] == "item/tool/requestUserInput"
     after
       File.rm_rf(test_root)
     end
@@ -1276,6 +1394,108 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server does not pass tracker credentials to the local Codex child" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-secret-env-#{System.unique_integer([:positive])}"
+      )
+
+    custom_secret_env = "SYMP_CUSTOM_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
+    profile_marker_env = "SYMP_TEST_BASH_PROFILE_LOADED_#{System.unique_integer([:positive])}"
+    previous_secret = System.get_env("LINEAR_API_KEY")
+    previous_custom_secret = System.get_env(custom_secret_env)
+    previous_home = System.get_env("HOME")
+    previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_secret)
+      restore_env(custom_secret_env, previous_custom_secret)
+      restore_env("HOME", previous_home)
+      restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+    end)
+
+    try do
+      bash_home = Path.join(test_root, "bash-home")
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SECRET")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-secret-env.trace")
+
+      File.mkdir_p!(bash_home)
+      File.mkdir_p!(workspace)
+
+      File.write!(Path.join(bash_home, ".bash_profile"), """
+      export LINEAR_API_KEY='profile-canonical-secret-that-must-not-reach-child'
+      export #{custom_secret_env}='profile-custom-secret-that-must-not-reach-child'
+      export #{profile_marker_env}=1
+      """)
+
+      System.put_env("LINEAR_API_KEY", "canonical-secret-that-must-not-reach-child")
+      System.put_env(custom_secret_env, "custom-secret-that-must-not-reach-child")
+      System.put_env("HOME", bash_home)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="$SYMP_TEST_CODEx_TRACE"
+      printf 'PROFILE_LOADED:%s\n' "$#{profile_marker_env}" >> "$trace_file"
+      printf 'CANONICAL_SECRET:%s\n' "$LINEAR_API_KEY" >> "$trace_file"
+      printf 'CUSTOM_SECRET:%s\n' "$#{custom_secret_env}" >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-secret"}}}'
+            ;;
+          3)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-secret"}}}'
+            ;;
+          4)
+            printf '%s\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_api_token: "$#{custom_secret_env}",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-secret-env",
+        identifier: "MT-SECRET",
+        title: "Keep tracker auth in Symphony",
+        description: "Ensure the child cannot bypass the centrally-authenticated tool boundary",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SECRET",
+        labels: ["security"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Do not inherit tracker auth", issue)
+      assert File.read!(trace_file) =~ "PROFILE_LOADED:1\n"
+      assert File.read!(trace_file) =~ "CANONICAL_SECRET:\n"
+      assert File.read!(trace_file) =~ "CUSTOM_SECRET:\n"
+      refute File.read!(trace_file) =~ "secret-that-must-not-reach-child"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(
@@ -1363,6 +1583,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "-T -p 2200 worker-01 bash -lc"
       assert argv_line =~ "cd "
       assert argv_line =~ remote_workspace
+      assert argv_line =~ "unset LINEAR_API_KEY"
       assert argv_line =~ "exec "
       assert argv_line =~ "fake-remote-codex app-server"
 

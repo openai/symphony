@@ -19,7 +19,13 @@ defmodule SymphonyElixir.CLI do
 
   @spec main([String.t()]) :: no_return()
   def main(args) do
-    case evaluate(args) do
+    main(args, fn -> Application.ensure_all_started(:symphony_elixir) end)
+  end
+
+  @doc false
+  @spec main([String.t()], (-> ensure_started_result())) :: no_return()
+  def main(args, ensure_all_started) do
+    case evaluate(args, runtime_deps(ensure_all_started)) do
       :ok ->
         wait_for_shutdown()
 
@@ -76,13 +82,13 @@ defmodule SymphonyElixir.CLI do
   end
 
   @spec runtime_deps() :: deps()
-  defp runtime_deps do
+  defp runtime_deps(ensure_all_started \\ fn -> Application.ensure_all_started(:symphony_elixir) end) do
     %{
       file_regular?: &File.regular?/1,
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_logs_root: &set_logs_root/1,
       set_server_port_override: &set_server_port_override/1,
-      ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end
+      ensure_all_started: ensure_all_started
     }
   end
 
