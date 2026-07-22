@@ -1,8 +1,11 @@
 defmodule SymphonyElixir.GoldenDatasetTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Config.Schema
+
   @dataset_path Path.expand("../fixtures/golden_dataset/workflow_prompt_cases.json", __DIR__)
   @repo_workflow_path Path.expand("../../WORKFLOW.md", __DIR__)
+  @render_opts [strict_variables: true, strict_filters: true]
   @required_case_fields ~w(id purpose issue expect_prompt_contains)
   @required_issue_fields ~w(id identifier title state url labels blocked_by)
   @issue_fields [
@@ -23,12 +26,11 @@ defmodule SymphonyElixir.GoldenDatasetTest do
   ]
 
   test "golden workflow prompt dataset is schema-valid and renderable" do
-    original_workflow_path = Workflow.workflow_file_path()
-    Workflow.set_workflow_file_path(@repo_workflow_path)
-
-    on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
-
+    workflow = load_repo_workflow!()
+    settings = settings_from_workflow!(workflow)
+    template = parse_template!(workflow)
     dataset = load_dataset!()
+
     assert dataset["schema_version"] == 1
     assert is_binary(dataset["description"])
 
@@ -37,7 +39,7 @@ defmodule SymphonyElixir.GoldenDatasetTest do
     assert length(cases) >= 4
 
     assert_unique_case_ids!(cases)
-    assert_active_states_are_covered!(cases)
+    assert_active_states_are_covered!(cases, settings)
 
     Enum.each(cases, fn golden_case ->
       assert_required_fields!(golden_case, @required_case_fields)
@@ -51,7 +53,7 @@ defmodule SymphonyElixir.GoldenDatasetTest do
       prompt =
         issue_attrs
         |> issue_from_attrs()
-        |> PromptBuilder.build_prompt(prompt_opts(golden_case))
+        |> render_prompt!(template, prompt_opts(golden_case))
 
       assert is_binary(prompt)
       assert prompt != ""
@@ -68,6 +70,20 @@ defmodule SymphonyElixir.GoldenDatasetTest do
     |> Jason.decode!()
   end
 
+  defp load_repo_workflow! do
+    {:ok, workflow} = Workflow.load(@repo_workflow_path)
+    workflow
+  end
+
+  defp settings_from_workflow!(%{config: config}) do
+    {:ok, settings} = Schema.parse(config)
+    settings
+  end
+
+  defp parse_template!(%{prompt_template: prompt_template}) do
+    Solid.parse!(prompt_template)
+  end
+
   defp assert_unique_case_ids!(cases) do
     ids = Enum.map(cases, &Map.fetch!(&1, "id"))
 
@@ -75,9 +91,9 @@ defmodule SymphonyElixir.GoldenDatasetTest do
     assert Enum.uniq(ids) == ids
   end
 
-  defp assert_active_states_are_covered!(cases) do
+  defp assert_active_states_are_covered!(cases, settings) do
     active_states =
-      Config.settings!()
+      settings
       |> Map.fetch!(:tracker)
       |> Map.fetch!(:active_states)
       |> MapSet.new()
@@ -108,6 +124,30 @@ defmodule SymphonyElixir.GoldenDatasetTest do
 
     struct!(Issue, struct_attrs)
   end
+
+  defp render_prompt!(%Issue{} = issue, template, opts) do
+    template
+    |> Solid.render!(
+      %{
+        "attempt" => Keyword.get(opts, :attempt),
+        "issue" => issue |> Map.from_struct() |> to_solid_map()
+      },
+      @render_opts
+    )
+    |> IO.iodata_to_binary()
+  end
+
+  defp to_solid_map(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), to_solid_value(value)} end)
+  end
+
+  defp to_solid_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp to_solid_value(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp to_solid_value(%Date{} = value), do: Date.to_iso8601(value)
+  defp to_solid_value(%Time{} = value), do: Time.to_iso8601(value)
+  defp to_solid_value(value) when is_map(value), do: to_solid_map(value)
+  defp to_solid_value(value) when is_list(value), do: Enum.map(value, &to_solid_value/1)
+  defp to_solid_value(value), do: value
 
   defp prompt_opts(%{"attempt" => attempt}) when is_integer(attempt), do: [attempt: attempt]
   defp prompt_opts(_case), do: []
