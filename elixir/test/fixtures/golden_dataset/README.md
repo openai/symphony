@@ -10,7 +10,7 @@ The dataset captures representative Linear issue inputs for every active state i
 - `id`: stable case identifier
 - `purpose`: why the case exists
 - `attempt`: optional retry attempt number used when rendering the prompt
-- `issue`: normalized `SymphonyElixir.Linear.Issue` fields
+- `issue`: normalized `SymphonyElixir.Tracker.Issue` fields
 - `expect_prompt_contains`: substrings that must appear in the rendered prompt
 
 The dataset is intentionally small. Add cases when the workflow prompt gains a materially different

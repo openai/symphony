@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Golden Linear issue inputs for validating in-repo WORKFLOW.md prompt rendering across active Symphony states.",
+  "description": "Golden tracker issue inputs for validating in-repo WORKFLOW.md prompt rendering across active Symphony states.",
   "cases": [
     {
       "id": "todo_new_work",
@@ -27,7 +27,7 @@
     },
     {
       "id": "in_progress_retry_without_description",
-      "purpose": "Continuation runs should render retry guidance and the empty-description fallback.",
+      "purpose": "Continuation runs should render follow-up guidance and the empty-description fallback.",
       "attempt": 2,
       "issue": {
         "id": "issue-golden-in-progress",
@@ -42,8 +42,8 @@
         "blocked_by": []
       },
       "expect_prompt_contains": [
-        "Continuation context:",
-        "retry attempt #2",
+        "Follow-up context:",
+        "follow-up attempt #2",
         "Title: Continue orchestration after transient failure",
         "Current status: In Progress",
         "No description provided."
