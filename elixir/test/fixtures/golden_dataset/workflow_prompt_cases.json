@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "description": "Golden tracker issue inputs for validating in-repo WORKFLOW.md prompt rendering across active Symphony states.",
+  "cases": [
+    {
+      "id": "todo_new_work",
+      "purpose": "Fresh queued work should render the issue identity, Todo state, and description without retry guidance.",
+      "attempt": null,
+      "issue": {
+        "id": "issue-golden-todo",
+        "identifier": "MT-101",
+        "title": "Create baseline dashboard snapshots",
+        "description": "Add fixtures that make dashboard rendering regressions easy to spot.",
+        "priority": 2,
+        "state": "Todo",
+        "branch_name": "nilram/mt-101-create-baseline-dashboard-snapshots",
+        "url": "https://example.org/issues/MT-101/create-baseline-dashboard-snapshots",
+        "labels": ["observability", "fixtures"],
+        "blocked_by": []
+      },
+      "expect_prompt_contains": [
+        "You are working on a Linear ticket `MT-101`",
+        "Title: Create baseline dashboard snapshots",
+        "Current status: Todo",
+        "Add fixtures that make dashboard rendering regressions easy to spot."
+      ]
+    },
+    {
+      "id": "in_progress_retry_without_description",
+      "purpose": "Continuation runs should render follow-up guidance and the empty-description fallback.",
+      "attempt": 2,
+      "issue": {
+        "id": "issue-golden-in-progress",
+        "identifier": "MT-202",
+        "title": "Continue orchestration after transient failure",
+        "description": null,
+        "priority": 1,
+        "state": "In Progress",
+        "branch_name": "nilram/mt-202-continue-orchestration",
+        "url": "https://example.org/issues/MT-202/continue-orchestration-after-transient-failure",
+        "labels": ["orchestrator"],
+        "blocked_by": []
+      },
+      "expect_prompt_contains": [
+        "Follow-up context:",
+        "follow-up attempt #2",
+        "Title: Continue orchestration after transient failure",
+        "Current status: In Progress",
+        "No description provided."
+      ]
+    },
+    {
+      "id": "rework_requested_changes",
+      "purpose": "Reviewer-requested rework should preserve the Rework state and task-specific feedback context.",
+      "attempt": null,
+      "issue": {
+        "id": "issue-golden-rework",
+        "identifier": "MT-303",
+        "title": "Address reviewer feedback on workpad handling",
+        "description": "Re-read the issue and replace the previous approach with a cleaner workpad update path.",
+        "priority": 1,
+        "state": "Rework",
+        "branch_name": "nilram/mt-303-address-workpad-feedback",
+        "url": "https://example.org/issues/MT-303/address-reviewer-feedback-on-workpad-handling",
+        "labels": ["linear", "workflow"],
+        "blocked_by": [
+          {
+            "id": "issue-blocker-1",
+            "identifier": "MT-300",
+            "state": "Done"
+          }
+        ]
+      },
+      "expect_prompt_contains": [
+        "Title: Address reviewer feedback on workpad handling",
+        "Current status: Rework",
+        "Re-read the issue and replace the previous approach with a cleaner workpad update path.",
+        "Treat `Rework` as a full approach reset"
+      ]
+    },
+    {
+      "id": "merging_approved_pr",
+      "purpose": "Approved work entering merge should render the Merging state and land-skill guardrails.",
+      "attempt": null,
+      "issue": {
+        "id": "issue-golden-merging",
+        "identifier": "MT-404",
+        "title": "Land approved dashboard fixture PR",
+        "description": "Approval is complete; follow the repository landing loop until the PR is merged.",
+        "priority": 3,
+        "state": "Merging",
+        "branch_name": "nilram/mt-404-land-dashboard-fixture-pr",
+        "url": "https://example.org/issues/MT-404/land-approved-dashboard-fixture-pr",
+        "labels": ["release"],
+        "blocked_by": []
+      },
+      "expect_prompt_contains": [
+        "Title: Land approved dashboard fixture PR",
+        "Current status: Merging",
+        "open and follow `.codex/skills/land/SKILL.md`",
+        "Do not call `gh pr merge` directly"
+      ]
+    }
+  ]
+}
