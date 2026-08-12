@@ -1105,10 +1105,10 @@ Optional provider-native agent tool extension:
   The adapter MAY use `issue.id` and `issue.native_ref` to preserve provider-specific richness
   without teaching the orchestrator provider semantics.
 - Tracker credentials SHOULD NOT be inherited by the coding-agent child process. An adapter that
-  resolves credentials from environment variables MUST declare which secret environment names the
-  launcher removes from local and remote child environments. Literal credentials in a repo-owned
-  `WORKFLOW.md` remain readable to a child with workspace access and SHOULD NOT be used when this
-  isolation matters.
+  resolves credentials from environment variables MUST declare configured `$VAR_NAME` references,
+  fallback names, and provider authentication aliases for removal from local and remote child
+  environments. Literal credentials in a repo-owned `WORKFLOW.md` remain readable to a child with
+  workspace access and SHOULD NOT be used when this isolation matters.
 - Unsupported tool names MUST return a structured failure result using the targeted protocol and
   continue the session.
 - Each adapter that ships tools MUST document:

@@ -21,7 +21,12 @@ defmodule SymphonyElixir.GitHub.Client do
   def secret_environment_names(tracker_settings) do
     provider = provider_settings(tracker_settings)
 
-    ["GITHUB_TOKEN" | env_reference_names([provider["token"]])]
+    [
+      "GITHUB_TOKEN",
+      "GH_TOKEN",
+      "GITHUB_ENTERPRISE_TOKEN",
+      "GH_ENTERPRISE_TOKEN" | env_reference_names([provider["token"]])
+    ]
     |> Enum.uniq()
   end
 

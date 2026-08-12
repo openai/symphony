@@ -252,9 +252,9 @@ codex:
   repository issue number, `issue.identifier` is `GH-<number>`, hidden or deleted `404` issues are
   omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
 - Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
-  `body`; Symphony executes it host-side with the session-bound token, strips `GITHUB_TOKEN` and
-  configured `$VAR` token names from the Codex child, and leaves raw tool access limited by that
-  token's GitHub permissions.
+  `body`; Symphony executes it host-side with the session-bound token, strips `GITHUB_TOKEN`,
+  `GH_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_ENTERPRISE_TOKEN`, and configured `$VAR` token names
+  from the Codex child, and leaves raw tool access limited by that token's GitHub permissions.
 
 ### Jira Cloud adapter
 
@@ -284,8 +284,9 @@ codex:
 - Configure `tracker.kind: gitlab` with `tracker.provider.project_path`, optional `api_url`, and
   `api_key` (default `GITLAB_PAT`); use `opened` and `closed` tracker states.
 - Symphony reads project issues by IID and exposes route-safe `GL-<iid>` identifiers.
-- `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps GitLab token env vars
-  out of the Codex child.
+- `gitlab_api` forwards raw GitLab REST requests with host-side auth and strips `GITLAB_PAT`,
+  `GITLAB_ACCESS_TOKEN`, `GITLAB_TOKEN`, `OAUTH_TOKEN`, and configured `$VAR` token names from the
+  Codex child.
 
 ## Web dashboard
 

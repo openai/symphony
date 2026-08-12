@@ -93,7 +93,13 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert {:error, :invalid_github_api_url} =
              GitHubClient.validate_settings(tracker_settings(%{"api_url" => "http://api.github.com"}))
 
-    assert GitHubClient.secret_environment_names(tracker_settings(%{"token" => "$SYMPHONY_GITHUB_TOKEN"})) == ["GITHUB_TOKEN", "SYMPHONY_GITHUB_TOKEN"]
+    assert GitHubClient.secret_environment_names(tracker_settings(%{"token" => "$SYMPHONY_GITHUB_TOKEN"})) == [
+             "GITHUB_TOKEN",
+             "GH_TOKEN",
+             "GITHUB_ENTERPRISE_TOKEN",
+             "GH_ENTERPRISE_TOKEN",
+             "SYMPHONY_GITHUB_TOKEN"
+           ]
   end
 
   test "client normalizes GitHub issues without dropping provider details" do
@@ -377,7 +383,15 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     binding = Tracker.bind_agent_tools()
 
     assert binding.adapter == GitHubAdapter
-    assert binding.secret_environment_names == ["GITHUB_TOKEN", token_env]
+
+    assert binding.secret_environment_names == [
+             "GITHUB_TOKEN",
+             "GH_TOKEN",
+             "GITHUB_ENTERPRISE_TOKEN",
+             "GH_ENTERPRISE_TOKEN",
+             token_env
+           ]
+
     assert [%{"name" => "github_api"}] = binding.tool_specs
     assert :ok = Config.validate!()
   end
