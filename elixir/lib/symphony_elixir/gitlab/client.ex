@@ -378,7 +378,7 @@ defmodule SymphonyElixir.GitLab.Client do
   defp gitlab_headers(api_key) do
     [
       {"Accept", "application/json"},
-      {"PRIVATE-TOKEN", api_key}
+      {"Authorization", "Bearer " <> api_key}
     ]
   end
 
