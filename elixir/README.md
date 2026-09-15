@@ -90,6 +90,12 @@ Supported release targets:
 `v*` tags publish all four targets with checksums. A manual workflow run builds the same
 artifacts without creating a release.
 
+The `burrito-nightly` workflow builds `main` daily at 08:00 UTC or on manual dispatch
+from `main`. After all four platform smoke tests pass, it updates the rolling
+[`nightly` prerelease](https://github.com/openai/symphony/releases/tag/nightly),
+including binaries and checksums. Nightly binaries use a `-nightly` version suffix;
+the release notes identify the source commit. Stable releases remain unchanged.
+
 After downloading the executable for your platform from a release:
 
 ```bash

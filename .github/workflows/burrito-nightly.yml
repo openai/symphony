@@ -1,0 +1,16 @@
+name: burrito-nightly
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/burrito-release.yml
+    with:
+      nightly: true

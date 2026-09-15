@@ -2,12 +2,21 @@ name: burrito-release
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      nightly:
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
 
 permissions:
   contents: read
+
+concurrency:
+  group: burrito-release-${{ inputs.nightly && 'nightly' || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -55,12 +64,21 @@ jobs:
             exit 1
           fi
 
+      - name: Set nightly version
+        if: inputs.nightly
+        run: |
+          sed -i -E 's/(version: "[^"]+)"/\1-nightly"/' mix.exs
+
       - name: Build Burrito executable
         run: BURRITO_TARGET=${{ matrix.target }} MIX_ENV=prod mise exec zig@0.15.2 -- mix release symphony --overwrite
 
       - name: Stage release assets
+        env:
+          NIGHTLY: ${{ inputs.nightly }}
         run: |
-          if test "$GITHUB_REF_TYPE" = "tag"; then
+          if test "$NIGHTLY" = "true"; then
+            version="nightly"
+          elif test "$GITHUB_REF_TYPE" = "tag"; then
             version="$GITHUB_REF_NAME"
           else
             version="${GITHUB_SHA::7}"
@@ -119,7 +137,7 @@ jobs:
           grep -F "This Symphony implementation is a low key engineering preview." <<<"$output"
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: inputs.nightly || startsWith(github.ref, 'refs/tags/v')
     needs: [build, smoke]
     runs-on: ubuntu-24.04
     permissions:
@@ -134,7 +152,23 @@ jobs:
         with:
           path: dist
 
+      - name: Publish rolling nightly prerelease
+        if: inputs.nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag --force nightly "$GITHUB_SHA"
+          git push --force origin refs/tags/nightly
+          printf 'Build of main at %s. Updated daily; may contain unreleased changes.\n' "$GITHUB_SHA" > "$RUNNER_TEMP/nightly-notes.md"
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release upload nightly dist/*/* --clobber
+            gh release edit nightly --title "Symphony nightly" --notes-file "$RUNNER_TEMP/nightly-notes.md" --prerelease --latest=false
+          else
+            gh release create nightly dist/*/* --verify-tag --title "Symphony nightly" --notes-file "$RUNNER_TEMP/nightly-notes.md" --prerelease --latest=false
+          fi
+
       - name: Create or update GitHub release
+        if: ${{ !inputs.nightly }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
