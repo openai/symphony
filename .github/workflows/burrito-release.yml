@@ -159,7 +159,7 @@ jobs:
         run: |
           git tag --force nightly "$GITHUB_SHA"
           git push --force origin refs/tags/nightly
-          printf 'Build of main at %s. Updated daily; may contain unreleased changes.\n' "$GITHUB_SHA" > "$RUNNER_TEMP/nightly-notes.md"
+          printf 'Build of main at %s. Built on pushes to main; may contain unreleased changes.\n' "$GITHUB_SHA" > "$RUNNER_TEMP/nightly-notes.md"
           if gh release view nightly >/dev/null 2>&1; then
             gh release upload nightly dist/*/* --clobber
             gh release edit nightly --title "Symphony nightly" --notes-file "$RUNNER_TEMP/nightly-notes.md" --prerelease --latest=false

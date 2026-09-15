@@ -1,9 +1,9 @@
 name: burrito-nightly
 
 on:
-  schedule:
-    - cron: "0 8 * * *"
-  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
